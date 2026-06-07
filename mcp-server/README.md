@@ -192,10 +192,29 @@ subheadline `50/400` at 70% opacity, drop shadow on).
 | **Raw base64** | `iVBORw0KGgo…` / `/9j/…` | PNG, JPEG, GIF, WebP, BMP auto-detected by signature. |
 | **File path** | `/work/shot.png` | Must exist on the **server's** filesystem (in Docker, mount it, e.g. `-v ./work:/work`). |
 
-**Get the rendered image back** — `generate_screenshot` returns the PNG as an MCP `image`
-content block (base64), so the calling agent receives the picture directly. If you also pass
-`outputPath`, it's written to that path on the server and the path is reported. `generate_batch`
-returns one image block per item (or writes each item's `outputPath`).
+**Get the rendered image back** — three ways, via the `deliver` parameter:
+
+| `deliver` | Result | When |
+|-----------|--------|------|
+| `inline` *(default)* | PNG as an MCP `image` block (base64) — the agent receives the picture directly. | Simplest; works on any transport. |
+| `url` | A **temporary download URL** (`https://<host>/files/<id>.png`) that **auto-deletes** after `ttlSeconds` (default 600). Response stays tiny. | HTTP transport; great for large images or fetching from a browser/Mac. |
+| `both` | Inline image **and** a temporary URL. | |
+
+```jsonc
+{ "outputDevice": "iphone-6.9", "background": { "preset": "Synthwave Dusk" },
+  "deliver": "url", "ttlSeconds": 300 }
+// → "Download (expires in 300s): https://appscreen.example.com/files/ab12….png"
+```
+
+The URL is served by the same HTTP server (so behind the Cloudflare Tunnel it's reachable at
+`https://<your-host>/files/…`), held **in memory only**, and removed when it expires. Over the
+**stdio** transport there's no HTTP server, so `url` falls back to `inline` with a note.
+
+For correct links behind a proxy/tunnel, the server uses `X-Forwarded-Proto`/`X-Forwarded-Host`,
+or set `PUBLIC_BASE_URL` (e.g. `https://appscreen.example.com`) explicitly.
+
+You can also pass `outputPath` to additionally write the PNG to a path **on the server**.
+`generate_batch` accepts the same `deliver` / `ttlSeconds` / `outputPath` per item.
 
 ### Full parameter coverage
 

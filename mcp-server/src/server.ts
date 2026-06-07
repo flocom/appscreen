@@ -17,6 +17,7 @@ import {
   getPresetGradient,
 } from "./presets.js";
 import { renderScreenshot, type RenderSpec } from "./render.js";
+import { putFile, getFile } from "./filestore.js";
 
 // ---------- Zod schemas (shared by generate_screenshot and generate_batch) ----------
 
@@ -207,12 +208,78 @@ const renderShape = {
   outputPath: z
     .string()
     .optional()
-    .describe("If set, also write the PNG to this absolute file path."),
+    .describe("If set, also write the PNG to this absolute file path (on the server)."),
+  deliver: z
+    .enum(["inline", "url", "both"])
+    .optional()
+    .describe(
+      "How to return the PNG: 'inline' base64 (default), 'url' = a temporary download link that auto-deletes after ttlSeconds (HTTP transport only), or 'both'.",
+    ),
+  ttlSeconds: z
+    .number()
+    .int()
+    .min(10)
+    .max(86400)
+    .optional()
+    .describe("Lifetime of the temporary download URL, in seconds (default 600 = 10 min)."),
 };
+
+// ---------- Delivery helper -----------
+
+interface ServerCtx {
+  publicBaseUrl?: string;
+}
+
+interface DeliveryOpts {
+  deliver?: "inline" | "url" | "both";
+  ttlSeconds?: number;
+  outputPath?: string;
+}
+
+// Turn a rendered PNG into MCP content according to the requested delivery mode.
+async function deliver(
+  png: Buffer,
+  width: number,
+  height: number,
+  opts: DeliveryOpts,
+  ctx: ServerCtx,
+): Promise<{ content: any[]; url?: string; savedTo?: string }> {
+  const mode = opts.deliver ?? "inline";
+  const content: any[] = [];
+  const notes: string[] = [];
+
+  let savedTo: string | undefined;
+  if (opts.outputPath) {
+    savedTo = resolve(opts.outputPath);
+    await writeFile(savedTo, png);
+  }
+
+  let url: string | undefined;
+  const wantUrl = mode === "url" || mode === "both";
+  if (wantUrl && ctx.publicBaseUrl) {
+    const ttlSec = Math.max(10, Math.min(opts.ttlSeconds ?? 600, 86400));
+    const id = putFile(png, "image/png", ttlSec * 1000);
+    url = `${ctx.publicBaseUrl}/files/${id}.png`;
+    notes.push(`Download (expires in ${ttlSec}s): ${url}`);
+  }
+  const urlUnavailable = wantUrl && !ctx.publicBaseUrl;
+  if (urlUnavailable) {
+    notes.push("URL delivery needs the HTTP transport — returning the image inline instead.");
+  }
+
+  const wantInline = mode === "inline" || mode === "both" || urlUnavailable;
+  if (wantInline) {
+    content.push({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
+  }
+  if (savedTo) notes.push(`Saved ${width}×${height} PNG to ${savedTo}`);
+  if (notes.length) content.push({ type: "text", text: notes.join("\n") });
+
+  return { content, url, savedTo };
+}
 
 // ---------- Build the MCP server ----------
 
-function buildServer(): McpServer {
+function buildServer(ctx: ServerCtx = {}): McpServer {
   const server = new McpServer({
     name: "appscreen-mcp",
     version: "1.0.0",
@@ -256,27 +323,19 @@ function buildServer(): McpServer {
       description:
         "Render a single marketing screenshot: background (gradient/preset/solid/image), " +
         "optional device screenshot with placement/shadow/border, and headline/subheadline text. " +
-        "Returns a PNG image; optionally writes it to outputPath.",
+        "Returns the PNG inline (base64) by default, or as a temporary download URL (deliver='url').",
       inputSchema: renderShape,
     },
     async (args) => {
-      const { outputPath, ...spec } = args;
+      const { outputPath, deliver: deliverMode, ttlSeconds, ...spec } = args;
       const result = await renderScreenshot(spec as RenderSpec);
-      const content: any[] = [
-        {
-          type: "image",
-          data: result.png.toString("base64"),
-          mimeType: "image/png",
-        },
-      ];
-      if (outputPath) {
-        const abs = resolve(outputPath);
-        await writeFile(abs, result.png);
-        content.push({
-          type: "text",
-          text: `Saved ${result.width}×${result.height} PNG to ${abs}`,
-        });
-      }
+      const { content } = await deliver(
+        result.png,
+        result.width,
+        result.height,
+        { deliver: deliverMode, ttlSeconds, outputPath },
+        ctx,
+      );
       return { content };
     },
   );
@@ -286,8 +345,9 @@ function buildServer(): McpServer {
     {
       title: "Generate a batch of screenshots",
       description:
-        "Render multiple screenshots in one call. Each item is a full screenshot spec; " +
-        "set outputPath on each to write files. Returns a per-item summary.",
+        "Render multiple screenshots in one call. Each item is a full screenshot spec " +
+        "(supports outputPath, deliver, ttlSeconds). Returns a per-item summary plus any " +
+        "inline images / download URLs.",
       inputSchema: {
         screenshots: z
           .array(z.object(renderShape))
@@ -300,21 +360,18 @@ function buildServer(): McpServer {
       const results: any[] = [];
       const images: any[] = [];
       for (let i = 0; i < screenshots.length; i++) {
-        const { outputPath, ...spec } = screenshots[i] as any;
+        const { outputPath, deliver: deliverMode, ttlSeconds, ...spec } = screenshots[i] as any;
         try {
           const r = await renderScreenshot(spec as RenderSpec);
-          let savedTo: string | undefined;
-          if (outputPath) {
-            savedTo = resolve(outputPath);
-            await writeFile(savedTo, r.png);
-          } else {
-            images.push({
-              type: "image",
-              data: r.png.toString("base64"),
-              mimeType: "image/png",
-            });
-          }
-          results.push({ index: i, ok: true, width: r.width, height: r.height, savedTo });
+          const d = await deliver(
+            r.png,
+            r.width,
+            r.height,
+            { deliver: deliverMode, ttlSeconds, outputPath },
+            ctx,
+          );
+          for (const c of d.content) if (c.type === "image") images.push(c);
+          results.push({ index: i, ok: true, width: r.width, height: r.height, url: d.url, savedTo: d.savedTo });
         } catch (e: any) {
           results.push({ index: i, ok: false, error: String(e?.message ?? e) });
         }
@@ -365,9 +422,19 @@ async function runHttp(port: number) {
 
   app.use(express.json({ limit: "50mb" }));
 
+  // Public base URL used to build temporary download links. Prefer an explicit
+  // PUBLIC_BASE_URL (correct behind proxies/tunnels); otherwise derive it from
+  // the request, honoring X-Forwarded-* set by reverse proxies.
+  const publicBaseUrlFor = (req: express.Request): string | undefined => {
+    if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
+    const proto = String(req.headers["x-forwarded-proto"] || req.protocol).split(",")[0].trim();
+    const host = String(req.headers["x-forwarded-host"] || req.get("host") || "").split(",")[0].trim();
+    return host ? `${proto}://${host}` : undefined;
+  };
+
   // Stateless: a fresh server+transport per request (simple and robust).
   app.post("/mcp", async (req, res) => {
-    const server = buildServer();
+    const server = buildServer({ publicBaseUrl: publicBaseUrlFor(req) });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
@@ -382,6 +449,19 @@ async function runHttp(port: number) {
       console.error("[appscreen-mcp] request error:", e);
       if (!res.headersSent) res.status(500).json({ error: "internal error" });
     }
+  });
+
+  // Temporary download endpoint for deliver:'url'. Auto-expires (see filestore).
+  app.get("/files/:id", (req, res) => {
+    const id = req.params.id.replace(/\.[a-z0-9]+$/i, "");
+    const f = getFile(id);
+    if (!f) {
+      res.status(404).json({ error: "not found or expired" });
+      return;
+    }
+    res.setHeader("Content-Type", f.mime);
+    res.setHeader("Cache-Control", "no-store");
+    res.send(f.buf);
   });
 
   app.get("/health", (_req, res) => res.json({ ok: true }));

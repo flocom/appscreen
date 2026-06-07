@@ -26,6 +26,10 @@ services:
       APPSCREEN_FONT_FAMILY: "DejaVu Sans"
       # Restrict browser CORS in production, e.g. https://claude.ai (default: *).
       MCP_CORS_ORIGIN: ${MCP_CORS_ORIGIN:-*}
+      # Public base URL for temporary download links (deliver:'url'). Leave empty to
+      # derive it from the request (X-Forwarded-* / Host). Set it behind a tunnel,
+      # e.g. https://appscreen.example.com
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     volumes:
       - ./work:/work
     restart: unless-stopped
