@@ -334,8 +334,135 @@ function initAppStoreFeatures() {
     }
 }
 
+// ============================================================================
+// "All languages" canvas view — one rendered row per language for the current
+// screenshot, each a drop zone to upload that language's image.
+// ============================================================================
+let allLanguagesMode = false;
+
+function assignFileToScreenshotLang(file, idx, lang) {
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+            if (!state.projectLanguages.includes(lang)) addProjectLanguage(lang);
+            addLocalizedImage(idx, lang, img, e.target.result, file.name);
+            renderAllLanguagesView();
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+function renderAllLanguagesView() {
+    const view = document.getElementById('all-languages-view');
+    if (!view) return;
+    view.innerHTML = '';
+
+    const idx = state.selectedIndex;
+    const ss = state.screenshots[idx];
+    if (idx == null || !ss) {
+        view.innerHTML = '<div class="alv-empty">Upload a screenshot to see all languages.</div>';
+        return;
+    }
+
+    const dims = getCanvasDimensions();
+    const rowW = 150;
+    const previewScale = rowW / dims.width;
+
+    const savedLang = state.currentLanguage;
+    const savedH = ss.text.currentHeadlineLang;
+    const savedS = ss.text.currentSubheadlineLang;
+
+    state.projectLanguages.forEach(lang => {
+        const hasImg = !!(ss.localizedImages && ss.localizedImages[lang] && ss.localizedImages[lang].image);
+
+        // Temporarily render this screenshot as if `lang` were current.
+        state.currentLanguage = lang;
+        ss.text.currentHeadlineLang = lang;
+        ss.text.currentSubheadlineLang = lang;
+
+        const canvas = document.createElement('canvas');
+        try { renderScreenshotToCanvas(idx, canvas, canvas.getContext('2d'), dims, previewScale); } catch (e) {}
+        canvas.className = 'alv-canvas';
+        canvas.style.width = rowW + 'px';
+        canvas.style.height = (rowW * dims.height / dims.width) + 'px';
+
+        const row = document.createElement('div');
+        row.className = 'alv-row';
+        row.innerHTML = `
+            <div class="alv-label">
+                <span class="flag">${languageFlags[lang] || '🏳️'}</span>
+                <span class="nm">${languageNames[lang] || lang}</span>
+                ${lang === state.projectLanguages[0] ? '<span class="alv-main">Main</span>' : ''}
+                ${hasImg ? '' : '<span class="alv-missing">no image</span>'}
+            </div>`;
+        const dz = document.createElement('div');
+        dz.className = 'alv-drop' + (hasImg ? '' : ' empty');
+        dz.title = 'Drop or click to set the ' + (languageNames[lang] || lang) + ' screenshot';
+        dz.appendChild(canvas);
+        const hint = document.createElement('div');
+        hint.className = 'alv-hint';
+        hint.textContent = hasImg ? 'Replace' : 'Drop image';
+        dz.appendChild(hint);
+
+        const input = document.createElement('input');
+        input.type = 'file'; input.accept = 'image/*'; input.hidden = true;
+        dz.appendChild(input);
+        dz.addEventListener('click', () => input.click());
+        input.addEventListener('change', () => { if (input.files[0]) assignFileToScreenshotLang(input.files[0], idx, lang); });
+        ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); }));
+        ['dragleave', 'dragend'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover'); }));
+        dz.addEventListener('drop', (e) => {
+            e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
+            if (e.dataTransfer.files[0]) assignFileToScreenshotLang(e.dataTransfer.files[0], idx, lang);
+        });
+
+        row.appendChild(dz);
+        view.appendChild(row);
+    });
+
+    state.currentLanguage = savedLang;
+    ss.text.currentHeadlineLang = savedH;
+    ss.text.currentSubheadlineLang = savedS;
+}
+
+function setCanvasView(view) {
+    allLanguagesMode = view === 'all-languages';
+    const strip = document.querySelector('.preview-strip');
+    const alv = document.getElementById('all-languages-view');
+    if (strip) strip.style.display = allLanguagesMode ? 'none' : '';
+    if (alv) alv.style.display = allLanguagesMode ? 'flex' : 'none';
+    document.querySelectorAll('#canvas-view-toggle button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+    if (allLanguagesMode) renderAllLanguagesView();
+}
+
+// Live-ish refresh: debounced re-render when the canvas updates while in ALV mode.
+let _alvTimer = null;
+function scheduleAlvRender() {
+    if (!allLanguagesMode) return;
+    clearTimeout(_alvTimer);
+    _alvTimer = setTimeout(renderAllLanguagesView, 180);
+}
+if (typeof updateCanvas === 'function') {
+    const _origUpdateCanvas = updateCanvas;
+    // eslint-disable-next-line no-global-assign
+    updateCanvas = function () {
+        _origUpdateCanvas.apply(this, arguments);
+        scheduleAlvRender();
+    };
+}
+
+function initCanvasViewToggle() {
+    document.querySelectorAll('#canvas-view-toggle button').forEach(btn => {
+        btn.addEventListener('click', () => setCanvasView(btn.dataset.view));
+    });
+}
+
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initAppStoreFeatures);
+    document.addEventListener('DOMContentLoaded', () => { initAppStoreFeatures(); initCanvasViewToggle(); });
 } else {
     initAppStoreFeatures();
+    initCanvasViewToggle();
 }
