@@ -1117,8 +1117,8 @@ function setup3DCanvasInteraction() {
             // Regular drag: rotate
             if (!ss.rotation3D) ss.rotation3D = { x: 0, y: 0, z: 0 };
 
-            ss.rotation3D.y = Math.max(-45, Math.min(45, ss.rotation3D.y + deltaX * 0.5));
-            ss.rotation3D.x = Math.max(-45, Math.min(45, ss.rotation3D.x + deltaY * 0.5));
+            ss.rotation3D.y = Math.max(-90, Math.min(90, ss.rotation3D.y + deltaX * 0.5));
+            ss.rotation3D.x = Math.max(-90, Math.min(90, ss.rotation3D.x + deltaY * 0.5));
 
             // Update sliders
             document.getElementById('rotation-3d-y').value = ss.rotation3D.y;
