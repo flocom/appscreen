@@ -207,7 +207,7 @@ function addLocalizedImage(screenshotIndex, lang, image, src, name) {
     // Update displays
     updateScreenshotList();
     updateCanvas();
-    saveState();
+    if (typeof scheduleSaveState === 'function') scheduleSaveState(); else saveState();
 }
 
 /**
