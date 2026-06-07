@@ -109,6 +109,41 @@ curl http://localhost:3000/health        # {"ok":true}
 The image bundles the fonts `@napi-rs/canvas` needs (DejaVu/Liberation sans + Noto color
 emoji) and the laurel SVG assets, so text and decorative frames render correctly headless.
 
+## Expose publicly (claude.ai / Claude Desktop custom connectors)
+
+The **"Add custom connector"** flow in claude.ai / Claude Desktop connects to a **remote**
+server that Anthropic's backend must reach over **public HTTPS on a standard port (443)**.
+A `http://localhost:3000` URL — or any `:3000` URL behind Cloudflare — will fail with
+*"Couldn't reach the MCP server"*, because:
+
+- `localhost` isn't reachable from the internet, and
+- Cloudflare's proxy only forwards a fixed set of ports — **3000 is not one of them** (use 443), and
+- the endpoint must present a valid TLS certificate.
+
+> For purely local use, you don't need any of this — use the stdio / `.mcp.json` /
+> `claude mcp add` methods above. The public route is only for the connector UI / sharing.
+
+### Cloudflare Tunnel (recommended if your domain is on Cloudflare)
+
+No open ports, automatic HTTPS on 443, and it creates the DNS record for you:
+
+1. Cloudflare **Zero Trust → Networks → Tunnels → Create a tunnel**, copy its **token**.
+2. Run the server *with* the tunnel:
+   ```bash
+   TUNNEL_TOKEN=<your-token> docker compose --profile tunnel up -d
+   ```
+3. In the tunnel's **Public Hostname** settings, route your hostname
+   (e.g. `appscreen.example.com`) to the service **`http://appscreen-mcp:3000`**.
+4. Use this URL in the connector — **no port**:
+   ```
+   https://appscreen.example.com/mcp
+   ```
+
+(Equivalent with any reverse proxy — nginx/Caddy terminating TLS on 443 and forwarding to
+the container's port 3000. The key points are the same: real DNS record, HTTPS, port 443.)
+
+Lock down browser CORS in production with `MCP_CORS_ORIGIN` (e.g. `https://claude.ai`).
+
 ## Tools
 
 | Tool | What it does |

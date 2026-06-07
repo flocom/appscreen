@@ -3,6 +3,13 @@
 # Then connect Claude Code:
 #   claude mcp add --transport http appscreen http://localhost:3000/mcp
 #
+# Expose it publicly over HTTPS (for claude.ai / Claude Desktop custom connectors)
+# via a Cloudflare Tunnel — no open ports, automatic TLS on 443:
+#   TUNNEL_TOKEN=xxxxx docker compose --profile tunnel up -d
+# In the Cloudflare Zero Trust dashboard, point the tunnel's public hostname
+# (e.g. appscreen.agence-zen.com) at the service  http://appscreen-mcp:3000
+# Then the connector URL is  https://appscreen.agence-zen.com/mcp  (no :3000).
+#
 # Mount a host folder at /work to let `outputPath` / image inputs use host files,
 # e.g. "outputPath": "/work/shot.png".
 services:
@@ -17,6 +24,23 @@ services:
       PORT: "3000"
       # Default text font when a spec doesn't set one (must be installed in the image).
       APPSCREEN_FONT_FAMILY: "DejaVu Sans"
+      # Restrict browser CORS in production, e.g. https://claude.ai (default: *).
+      MCP_CORS_ORIGIN: ${MCP_CORS_ORIGIN:-*}
     volumes:
       - ./work:/work
+    restart: unless-stopped
+
+  # Optional: public HTTPS via Cloudflare Tunnel. Enable with `--profile tunnel`.
+  # Get TUNNEL_TOKEN from Cloudflare Zero Trust → Networks → Tunnels (create a
+  # tunnel, copy its token). Route the public hostname to http://appscreen-mcp:3000.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: appscreen-cloudflared
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      # Required when using --profile tunnel. Set it in your shell or a .env file.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - appscreen-mcp
     restart: unless-stopped
