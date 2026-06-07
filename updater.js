@@ -57,14 +57,16 @@
         if (btn) { const t = btn.title; btn.title = msg; setTimeout(() => { btn.title = t; }, 1600); }
     }
 
+    // Returns true if an update is available.
     async function check(manual) {
         if (manual && btn) btn.classList.add('checking');
         const sig = await fetchSignature();
         if (btn) btn.classList.remove('checking');
-        if (!sig) { if (manual) flash("Couldn't check for updates"); return; }
-        if (baseline === null) { baseline = sig; if (manual) flash('Up to date — you have the latest version'); return; }
-        if (sig !== baseline) setAvailable(true);
-        else if (manual) flash('Up to date — you have the latest version');
+        if (!sig) { if (manual) flash("Couldn't check for updates"); return false; }
+        if (baseline === null) { baseline = sig; if (manual) flash('Up to date — you have the latest version'); return false; }
+        if (sig !== baseline) { setAvailable(true); return true; }
+        if (manual) flash('Up to date — you have the latest version');
+        return false;
     }
 
     async function doUpdate() {
@@ -82,11 +84,11 @@
         btn = document.getElementById('update-btn');
         if (!btn) return;
         btn.addEventListener('click', async () => {
-            if (available) {
+            // Always re-check on click, then apply immediately if there's an update.
+            const hasUpdate = (await check(true)) || available;
+            if (hasUpdate) {
                 const ok = window.confirm('A new version of the app is available. Update now?\nYour project is saved automatically.');
                 if (ok) doUpdate();
-            } else {
-                check(true);
             }
         });
         check();
