@@ -974,10 +974,15 @@
                         <label class="control-label">Text Background</label>
                         <div class="toggle" id="headline-bg-toggle" title="Enable text background"></div>
                     </div>
-                    <div class="control-row">
-                        <input type="color" id="headline-bg-color" value="#000000" title="Background color">
-                        <input type="range" id="headline-bg-opacity" min="0" max="100" value="0" title="Background opacity">
-                        <span class="range-value" id="headline-bg-opacity-value">Off</span>
+                    <div class="text-bg-controls" id="headline-bg-controls" style="display:none;">
+                        <div class="control-row">
+                            <input type="color" id="headline-bg-color" value="#000000" title="Background color">
+                        </div>
+                        <div class="control-row opacity-row">
+                            <span class="mini-label">Opacity</span>
+                            <input type="range" id="headline-bg-opacity" min="0" max="100" value="100" title="Background opacity">
+                            <span class="range-value" id="headline-bg-opacity-value">100%</span>
+                        </div>
                     </div>
                 </div>
 
@@ -1115,10 +1120,15 @@
                         <label class="control-label">Text Background</label>
                         <div class="toggle" id="subheadline-bg-toggle" title="Enable text background"></div>
                     </div>
-                    <div class="control-row">
-                        <input type="color" id="subheadline-bg-color" value="#000000" title="Background color">
-                        <input type="range" id="subheadline-bg-opacity" min="0" max="100" value="0" title="Background opacity">
-                        <span class="range-value" id="subheadline-bg-opacity-value">Off</span>
+                    <div class="text-bg-controls" id="subheadline-bg-controls" style="display:none;">
+                        <div class="control-row">
+                            <input type="color" id="subheadline-bg-color" value="#000000" title="Background color">
+                        </div>
+                        <div class="control-row opacity-row">
+                            <span class="mini-label">Opacity</span>
+                            <input type="range" id="subheadline-bg-opacity" min="0" max="100" value="100" title="Background opacity">
+                            <span class="range-value" id="subheadline-bg-opacity-value">100%</span>
+                        </div>
                     </div>
                 </div>
 
