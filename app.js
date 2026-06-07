@@ -7047,6 +7047,7 @@ function getCanvasDimensions(index) {
 
 function updateCanvas() {
     scheduleSaveState(); // Persist state (debounced — see scheduleSaveState)
+    if (typeof window !== 'undefined') window.__imgRect = { has: false };
     const dims = getCanvasDimensions();
     canvas.width = dims.width;
     canvas.height = dims.height;
@@ -7293,6 +7294,7 @@ function slideToScreenshot(newIndex, direction) {
 function renderScreenshotToCanvas(index, targetCanvas, targetCtx, dims, previewScale) {
     const screenshot = state.screenshots[index];
     if (!screenshot) return;
+    if (typeof window !== 'undefined') window.__imgRect = { has: false };
 
     // Get localized image for current language
     const img = getScreenshotImage(screenshot);
@@ -7449,6 +7451,9 @@ function drawScreenshotToContext(context, dims, img, settings) {
     const y = (dims.height - imgHeight) / 2 + (settings.y / 100 - 0.5) * moveY;
     const centerX = x + imgWidth / 2;
     const centerY = y + imgHeight / 2;
+
+    // Record the device rect for text auto-fit / overlap detection.
+    if (typeof window !== 'undefined') window.__imgRect = { x, y, w: imgWidth, h: imgHeight, has: true };
 
     context.save();
 
@@ -7638,6 +7643,67 @@ function drawTextWithPanorama(context, dims, txt) {
     }
 }
 
+// Measure the vertical extent {top, bottom} of the text block without drawing,
+// replaying drawTextToContext's layout maths. Returns null if no text.
+function textVerticalExtent(context, dims, txt) {
+    const headlineEnabled = txt.headlineEnabled !== false;
+    const subheadlineEnabled = txt.subheadlineEnabled || false;
+    const headlineLang = txt.currentHeadlineLang || 'en';
+    const subheadlineLang = txt.currentSubheadlineLang || 'en';
+    const headlineLayout = getEffectiveLayout(txt, headlineLang);
+    const subheadlineLayout = getEffectiveLayout(txt, subheadlineLang);
+    const layoutSettings = getEffectiveLayout(txt, getTextLayoutLanguage(txt));
+    const headline = headlineEnabled && txt.headlines ? (txt.headlines[headlineLang] || '') : '';
+    const subheadline = subheadlineEnabled && txt.subheadlines ? (txt.subheadlines[subheadlineLang] || '') : '';
+    if (!headline && !subheadline) return null;
+    const padding = dims.width * 0.08;
+    const isTop = layoutSettings.position === 'top';
+    const textY = isTop ? dims.height * (layoutSettings.offsetY / 100) : dims.height * (1 - layoutSettings.offsetY / 100);
+    let top = Infinity, bottom = -Infinity, currentY = textY;
+    if (headline) {
+        context.font = `${txt.headlineItalic ? 'italic' : 'normal'} ${txt.headlineWeight} ${headlineLayout.headlineSize}px ${txt.headlineFont}`;
+        const lines = wrapText(context, headline, dims.width - padding * 2);
+        const lineHeight = headlineLayout.headlineSize * (layoutSettings.lineHeight / 100);
+        if (!isTop) currentY -= (lines.length - 1) * lineHeight;
+        lines.forEach((_, i) => {
+            const y = currentY + i * lineHeight;
+            top = Math.min(top, isTop ? y : y - headlineLayout.headlineSize);
+            bottom = Math.max(bottom, isTop ? y + headlineLayout.headlineSize : y);
+        });
+        const lastLineY = currentY + (lines.length - 1) * lineHeight;
+        const gap = lineHeight - headlineLayout.headlineSize;
+        currentY = (isTop ? lastLineY + headlineLayout.headlineSize + gap : lastLineY + gap) + (txt.subheadlineSpacing || 0);
+    }
+    if (subheadline) {
+        context.font = `${txt.subheadlineItalic ? 'italic' : 'normal'} ${txt.subheadlineWeight || '400'} ${subheadlineLayout.subheadlineSize}px ${txt.subheadlineFont || txt.headlineFont}`;
+        const lines = wrapText(context, subheadline, dims.width - padding * 2);
+        const subLineHeight = subheadlineLayout.subheadlineSize * 1.4;
+        lines.forEach((_, i) => {
+            const y = currentY + i * subLineHeight;
+            top = Math.min(top, y);
+            bottom = Math.max(bottom, y + subheadlineLayout.subheadlineSize);
+        });
+    }
+    if (!isFinite(top) || !isFinite(bottom)) return null;
+    return { top, bottom };
+}
+
+// Compute whether the text overlaps the device image, and the scale needed to
+// fit it (1 = fits). Uses the last drawn device rect (window.__imgRect).
+function computeTextFit(context, dims, txt) {
+    const rect = (typeof window !== 'undefined') ? window.__imgRect : null;
+    if (!rect || !rect.has) return { scale: 1, overlaps: false };
+    const ext = textVerticalExtent(context, dims, txt);
+    if (!ext) return { scale: 1, overlaps: false };
+    const isTop = getEffectiveLayout(txt, getTextLayoutLanguage(txt)).position === 'top';
+    const gap = dims.height * 0.02;
+    const blockH = ext.bottom - ext.top;
+    const avail = isTop ? (rect.y - gap) - ext.top : ext.bottom - (rect.y + rect.h + gap);
+    const overlaps = blockH > 0 && blockH > avail;
+    const scale = overlaps ? Math.max(0.35, avail / blockH) : 1;
+    return { scale, overlaps, anchorY: isTop ? ext.top : ext.bottom, cx: dims.width / 2 };
+}
+
 function drawTextToContext(context, dims, txt) {
     // Check enabled states (default headline to true for backwards compatibility)
     const headlineEnabled = txt.headlineEnabled !== false;
@@ -7654,6 +7720,20 @@ function drawTextToContext(context, dims, txt) {
     const subheadline = subheadlineEnabled && txt.subheadlines ? (txt.subheadlines[subheadlineLang] || '') : '';
 
     if (!headline && !subheadline) return;
+
+    // Auto-fit: shrink the text block (around its anchored edge) so it doesn't
+    // overlap the device image, when the feature is enabled.
+    let _autoFitApplied = false;
+    if (typeof state !== 'undefined' && state.autoFitText) {
+        const fit = computeTextFit(context, dims, txt);
+        if (fit.overlaps && fit.scale < 0.999) {
+            context.save();
+            context.translate(fit.cx, fit.anchorY);
+            context.scale(fit.scale, fit.scale);
+            context.translate(-fit.cx, -fit.anchorY);
+            _autoFitApplied = true;
+        }
+    }
 
     const padding = dims.width * 0.08;
     const textY = layoutSettings.position === 'top'
@@ -7775,6 +7855,8 @@ function drawTextToContext(context, dims, txt) {
             context.textBaseline = 'bottom';
         }
     }
+
+    if (_autoFitApplied) context.restore();
 }
 
 // Draw elements for the current screenshot at a specific layer
@@ -8156,6 +8238,9 @@ function drawScreenshot() {
     const centerX = x + imgWidth / 2;
     const centerY = y + imgHeight / 2;
 
+    // Record the device rect for text auto-fit / overlap detection.
+    if (typeof window !== 'undefined') window.__imgRect = { x, y, w: imgWidth, h: imgHeight, has: true };
+
     ctx.save();
 
     // Apply transformations
@@ -8252,158 +8337,10 @@ function drawDeviceFrame(x, y, width, height) {
 }
 
 function drawText() {
-    const dims = getCanvasDimensions();
-    const text = getTextSettings();
-
-    // Panorama with per-screen text: draw a separate block centered in each panel.
-    if (text.perScreenText && (dims.span || 1) > 1) {
-        const baseW = dims.baseWidth || (dims.width / (dims.span || 1));
-        for (let p = 0; p < dims.span; p++) {
-            ctx.save();
-            ctx.translate(p * baseW, 0);
-            drawTextToContext(ctx, { width: baseW, height: dims.height }, makePanelTxt(text, p));
-            ctx.restore();
-        }
-        return;
-    }
-
-    // Check enabled states (default headline to true for backwards compatibility)
-    const headlineEnabled = text.headlineEnabled !== false;
-    const subheadlineEnabled = text.subheadlineEnabled || false;
-
-    const headlineLang = text.currentHeadlineLang || 'en';
-    const subheadlineLang = text.currentSubheadlineLang || 'en';
-    const layoutLang = getTextLayoutLanguage(text);
-    const headlineLayout = getEffectiveLayout(text, headlineLang);
-    const subheadlineLayout = getEffectiveLayout(text, subheadlineLang);
-    const layoutSettings = getEffectiveLayout(text, layoutLang);
-
-    // Get current language text (only if enabled)
-    const headline = headlineEnabled && text.headlines ? (text.headlines[headlineLang] || '') : '';
-    const subheadline = subheadlineEnabled && text.subheadlines ? (text.subheadlines[subheadlineLang] || '') : '';
-
-    if (!headline && !subheadline) return;
-
-    const padding = dims.width * 0.08;
-    const textY = layoutSettings.position === 'top'
-        ? dims.height * (layoutSettings.offsetY / 100)
-        : dims.height * (1 - layoutSettings.offsetY / 100);
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = layoutSettings.position === 'top' ? 'top' : 'bottom';
-
-    let currentY = textY;
-
-    // Draw headline
-    if (headline) {
-        const fontStyle = text.headlineItalic ? 'italic' : 'normal';
-        ctx.font = `${fontStyle} ${text.headlineWeight} ${headlineLayout.headlineSize}px ${text.headlineFont}`;
-        ctx.fillStyle = text.headlineColor;
-
-        const lines = wrapText(ctx, headline, dims.width - padding * 2);
-        const lineHeight = headlineLayout.headlineSize * (layoutSettings.lineHeight / 100);
-
-        if (layoutSettings.position === 'bottom') {
-            currentY -= (lines.length - 1) * lineHeight;
-        }
-
-        let lastLineY;
-        const hlBaselineTop = layoutSettings.position === 'top';
-        lines.forEach((line, i) => {
-            const y = currentY + i * lineHeight;
-            lastLineY = y;
-            if (text.headlineBgOpacity > 0) {
-                drawTextHighlight(ctx, dims.width / 2, y, ctx.measureText(line).width, headlineLayout.headlineSize, hlBaselineTop, text.headlineBgColor || '#000000', text.headlineBgOpacity / 100);
-            }
-            ctx.fillText(line, dims.width / 2, y);
-
-            // Calculate text metrics for decorations
-            // When textBaseline is 'top', y is at top of text; when 'bottom', y is at bottom
-            const textWidth = ctx.measureText(line).width;
-            const fontSize = headlineLayout.headlineSize;
-            const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
-
-            // Draw underline
-            if (text.headlineUnderline) {
-                const underlineY = layoutSettings.position === 'top'
-                    ? y + fontSize * 0.9  // Below text when baseline is top
-                    : y + fontSize * 0.1; // Below text when baseline is bottom
-                ctx.fillRect(x, underlineY, textWidth, lineThickness);
-            }
-
-            // Draw strikethrough
-            if (text.headlineStrikethrough) {
-                const strikeY = layoutSettings.position === 'top'
-                    ? y + fontSize * 0.4  // Middle of text when baseline is top
-                    : y - fontSize * 0.4; // Middle of text when baseline is bottom
-                ctx.fillRect(x, strikeY, textWidth, lineThickness);
-            }
-        });
-
-        // Track where subheadline should start (below the bottom edge of headline)
-        // The gap between headline and subheadline should be (lineHeight - fontSize)
-        // This is the "extra" spacing beyond the text itself
-        const gap = lineHeight - headlineLayout.headlineSize;
-        if (layoutSettings.position === 'top') {
-            // For top: lastLineY is top of last line, add fontSize to get bottom, then add gap
-            currentY = lastLineY + headlineLayout.headlineSize + gap;
-        } else {
-            // For bottom: lastLineY is already the bottom of last line, just add gap
-            currentY = lastLineY + gap;
-        }
-        currentY += (text.subheadlineSpacing || 0); // extra title→subtitle spacing
-    }
-
-    // Draw subheadline (always below headline visually)
-    if (subheadline) {
-        const subFontStyle = text.subheadlineItalic ? 'italic' : 'normal';
-        const subWeight = text.subheadlineWeight || '400';
-        ctx.font = `${subFontStyle} ${subWeight} ${subheadlineLayout.subheadlineSize}px ${text.subheadlineFont || text.headlineFont}`;
-        ctx.fillStyle = hexToRgba(text.subheadlineColor, text.subheadlineOpacity / 100);
-
-        const lines = wrapText(ctx, subheadline, dims.width - padding * 2);
-        const subLineHeight = subheadlineLayout.subheadlineSize * 1.4;
-
-        // Subheadline starts after headline with gap determined by headline lineHeight
-        // For bottom position, switch to 'top' baseline so subheadline draws downward
-        const subY = currentY;
-        if (layoutSettings.position === 'bottom') {
-            ctx.textBaseline = 'top';
-        }
-
-        lines.forEach((line, i) => {
-            const y = subY + i * subLineHeight;
-            if (text.subheadlineBgOpacity > 0) {
-                drawTextHighlight(ctx, dims.width / 2, y, ctx.measureText(line).width, subheadlineLayout.subheadlineSize, true, text.subheadlineBgColor || '#000000', text.subheadlineBgOpacity / 100);
-                ctx.fillStyle = hexToRgba(text.subheadlineColor, text.subheadlineOpacity / 100);
-            }
-            ctx.fillText(line, dims.width / 2, y);
-
-            // Calculate text metrics for decorations
-            const textWidth = ctx.measureText(line).width;
-            const fontSize = subheadlineLayout.subheadlineSize;
-            const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
-
-            // Draw underline (using 'top' baseline for subheadline)
-            if (text.subheadlineUnderline) {
-                const underlineY = y + fontSize * 0.9;
-                ctx.fillRect(x, underlineY, textWidth, lineThickness);
-            }
-
-            // Draw strikethrough
-            if (text.subheadlineStrikethrough) {
-                const strikeY = y + fontSize * 0.4;
-                ctx.fillRect(x, strikeY, textWidth, lineThickness);
-            }
-        });
-
-        // Restore baseline if we changed it
-        if (layoutSettings.position === 'bottom') {
-            ctx.textBaseline = 'bottom';
-        }
-    }
+    // Unified with the shared renderer so auto-fit, text background, spacing and
+    // per-screen panorama all behave identically on the main canvas and in
+    // previews/export.
+    drawTextWithPanorama(ctx, getCanvasDimensions(), getTextSettings());
 }
 
 function drawNoise() {

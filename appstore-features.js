@@ -382,6 +382,12 @@ function renderAlvCell(cell) {
     ss.text.currentSubheadlineLang = lang;
     const canvas = document.createElement('canvas');
     try { renderScreenshotToCanvas(i, canvas, canvas.getContext('2d'), dims, scale); } catch (e) {}
+    // Overlap detection for this view+language (uses the rect from the render above).
+    let overlaps = false;
+    try {
+        const otxt = Object.assign({}, ss.text, { currentHeadlineLang: lang, currentSubheadlineLang: lang });
+        overlaps = typeof computeTextFit === 'function' && computeTextFit(canvas.getContext('2d'), dims, otxt).overlaps;
+    } catch (e) {}
     state.currentLanguage = savedLang;
     ss.text.currentHeadlineLang = sH;
     ss.text.currentSubheadlineLang = sS;
@@ -393,6 +399,15 @@ function renderAlvCell(cell) {
     const wrap = document.createElement('div');
     wrap.className = 'alv-cell-canvas';
     wrap.appendChild(canvas);
+    if (overlaps) {
+        const badge = document.createElement('div');
+        badge.className = 'alv-overlap-badge' + (state.autoFitText ? ' fixed' : '');
+        badge.textContent = state.autoFitText ? '⤓ fit' : '⚠ overlap';
+        badge.title = state.autoFitText
+            ? 'Text would overlap the image — auto-fitted to fit'
+            : 'Text overlaps the image in this language — enable Auto-fit text';
+        wrap.appendChild(badge);
+    }
     // Panorama slice guides
     const span = (ss.screenshot && ss.screenshot.spanScreens) || 1;
     for (let k = 1; k < span; k++) {
@@ -833,3 +848,106 @@ if (typeof syncUIWithState === 'function') {
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initTextSpacingAndPerScreen);
 else initTextSpacingAndPerScreen();
+
+// ============================================================================
+// Text/image overlap guard: detect text overlapping the device in any language,
+// and optionally auto-shrink the text (per view + language) so it fits.
+// ============================================================================
+
+// Languages that have text or are part of the project, for a given screenshot.
+function ogLangsForScreenshot(ss) {
+    const set = new Set();
+    ['headlines', 'subheadlines'].forEach(k => {
+        if (ss.text && ss.text[k]) Object.keys(ss.text[k]).forEach(l => { if (ss.text[k][l]) set.add(l); });
+    });
+    (state.languages || []).forEach(l => set.add(l));
+    if (!set.size) set.add(state.currentLanguage || 'en');
+    return Array.from(set);
+}
+
+// Languages of `ss` (index i) where the text overlaps the device image.
+function ogOverlapLangs(i) {
+    const ss = state.screenshots[i];
+    if (!ss || typeof computeTextFit !== 'function') return [];
+    const dims = getCanvasDimensions(i);
+    const tmp = document.createElement('canvas');
+    tmp.width = 8; tmp.height = 8;
+    const tctx = tmp.getContext('2d');
+    const prevLang = state.currentLanguage;
+    const out = [];
+    ogLangsForScreenshot(ss).forEach(L => {
+        state.currentLanguage = L;
+        window.__imgRect = { has: false };
+        const img = (typeof getScreenshotImage === 'function') ? getScreenshotImage(ss) : null;
+        if (img && !(ss.screenshot && ss.screenshot.use3D)) {
+            try { drawScreenshotToContext(tctx, dims, img, ss.screenshot); } catch (e) {}
+        }
+        const txt = Object.assign({}, ss.text, { currentHeadlineLang: L, currentSubheadlineLang: L });
+        let fit;
+        try { fit = computeTextFit(tctx, dims, txt); } catch (e) { fit = { overlaps: false }; }
+        if (fit.overlaps) out.push(L);
+    });
+    state.currentLanguage = prevLang;
+    return out;
+}
+
+function ogFlag(lang) {
+    return (typeof languageFlags === 'object' && languageFlags[lang]) ? languageFlags[lang] : lang.toUpperCase();
+}
+
+function initOverlapGuard() {
+    try { state.autoFitText = localStorage.getItem('autoFitText') === '1'; } catch (e) { state.autoFitText = false; }
+    renderOverlapGuardUI();
+}
+
+function renderOverlapGuardUI() {
+    const tab = document.getElementById('tab-text');
+    if (!tab) return;
+    let box = document.getElementById('overlap-guard-box');
+    if (!box) {
+        box = document.createElement('div');
+        box.id = 'overlap-guard-box';
+        box.className = 'overlap-guard-box';
+        tab.insertBefore(box, tab.firstChild);
+    }
+    box.innerHTML =
+        '<div class="og-row">' +
+        '  <div class="og-title">Auto-fit text <span class="og-sub">avoid image overlap</span></div>' +
+        '  <div class="toggle-switch' + (state.autoFitText ? ' active' : '') + '" id="autofit-toggle"></div>' +
+        '</div>' +
+        '<div class="og-status" id="autofit-status"></div>';
+
+    box.querySelector('#autofit-toggle').addEventListener('click', function () {
+        this.classList.toggle('active');
+        state.autoFitText = this.classList.contains('active');
+        try { localStorage.setItem('autoFitText', state.autoFitText ? '1' : '0'); } catch (e) {}
+        updateCanvas();
+        updateOverlapStatus();
+        const view = document.getElementById('all-languages-view');
+        if (view && view.offsetParent !== null && typeof renderAllLanguagesView === 'function') renderAllLanguagesView();
+    });
+    updateOverlapStatus();
+}
+
+function updateOverlapStatus() {
+    const el = document.getElementById('autofit-status');
+    if (!el) return;
+    let langs = [];
+    try { langs = ogOverlapLangs(state.selectedIndex); } catch (e) {}
+    if (!langs.length) {
+        el.innerHTML = '<span class="og-ok">✓ No text/image overlap</span>';
+        return;
+    }
+    const flags = langs.map(ogFlag).join(' ');
+    el.innerHTML = '<span class="og-warn">⚠ Overlap in ' + langs.length + ' language' + (langs.length > 1 ? 's' : '') + ':</span> ' +
+        '<span class="og-flags">' + flags + '</span>' +
+        '<span class="og-note">' + (state.autoFitText ? ' — auto-fitted to fit.' : ' — turn on Auto-fit to shrink.') + '</span>';
+}
+
+initOverlapGuard();
+
+if (typeof syncUIWithState === 'function') {
+    const _origSyncUIOG = syncUIWithState;
+    // eslint-disable-next-line no-global-assign
+    syncUIWithState = function () { _origSyncUIOG.apply(this, arguments); try { updateOverlapStatus(); } catch (e) {} };
+}
