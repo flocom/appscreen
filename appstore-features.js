@@ -467,9 +467,77 @@ function initCanvasViewToggle() {
     });
 }
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => { initAppStoreFeatures(); initCanvasViewToggle(); });
-} else {
+// ============================================================================
+// Device notch (2D "Device Model") + text background controls
+// ============================================================================
+function initDeviceTextExtras() {
+    // 2D notch / Device Model selector
+    document.querySelectorAll('#notch-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#notch-selector button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            setScreenshotSetting('frame.notch', btn.dataset.notch);
+            updateCanvas();
+        });
+    });
+
+    // Text background (color + opacity) for headline & subheadline
+    const bindBg = (colorId, opacityId, valueId, colorKey, opacityKey) => {
+        const color = document.getElementById(colorId);
+        const opacity = document.getElementById(opacityId);
+        const val = document.getElementById(valueId);
+        if (color) color.addEventListener('input', () => { setTextSetting(colorKey, color.value); updateCanvas(); });
+        if (opacity) opacity.addEventListener('input', () => {
+            const v = parseInt(opacity.value, 10);
+            setTextSetting(opacityKey, v);
+            if (val) val.textContent = v === 0 ? 'Off' : v + '%';
+            updateCanvas();
+        });
+    };
+    bindBg('headline-bg-color', 'headline-bg-opacity', 'headline-bg-opacity-value', 'headlineBgColor', 'headlineBgOpacity');
+    bindBg('subheadline-bg-color', 'subheadline-bg-opacity', 'subheadline-bg-opacity-value', 'subheadlineBgColor', 'subheadlineBgOpacity');
+}
+
+function syncDeviceTextExtras() {
+    const ss = typeof getScreenshotSettings === 'function' ? getScreenshotSettings() : null;
+    const txt = typeof getTextSettings === 'function' ? getTextSettings() : null;
+    if (ss) {
+        const notch = (ss.frame && ss.frame.notch) || 'none';
+        document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === notch));
+        const group = document.getElementById('device-model-2d-group');
+        if (group) group.style.display = ss.use3D ? 'none' : 'block';
+    }
+    if (txt) {
+        const setCtl = (colorId, opacityId, valueId, color, opacity) => {
+            const c = document.getElementById(colorId), o = document.getElementById(opacityId), v = document.getElementById(valueId);
+            if (c && color) c.value = color;
+            if (o) o.value = opacity || 0;
+            if (v) v.textContent = (opacity || 0) === 0 ? 'Off' : opacity + '%';
+        };
+        setCtl('headline-bg-color', 'headline-bg-opacity', 'headline-bg-opacity-value', txt.headlineBgColor || '#000000', txt.headlineBgOpacity || 0);
+        setCtl('subheadline-bg-color', 'subheadline-bg-opacity', 'subheadline-bg-opacity-value', txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity || 0);
+    }
+}
+
+// Keep the new controls in sync when the app refreshes the UI (screenshot switch, etc.)
+if (typeof syncUIWithState === 'function') {
+    const _origSyncUI = syncUIWithState;
+    // eslint-disable-next-line no-global-assign
+    syncUIWithState = function () {
+        _origSyncUI.apply(this, arguments);
+        try { syncDeviceTextExtras(); } catch (e) {}
+    };
+}
+
+function initAllExtras() {
     initAppStoreFeatures();
     initCanvasViewToggle();
+    initDeviceTextExtras();
+    try { syncDeviceTextExtras(); } catch (e) {}
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAllExtras);
+} else {
+    initAllExtras();
 }
