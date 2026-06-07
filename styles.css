@@ -3803,15 +3803,15 @@ input[type="range"]::-webkit-slider-thumb {
     color: #fff;
 }
 
+/* All-languages = matrix: rows = screenshots, columns = languages */
 .all-languages-view {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
     width: 100%;
-    max-width: 720px;
     margin: 0 auto;
-    padding: 8px 4px 24px;
-    overflow-y: auto;
+    padding: 8px 12px 24px;
+    overflow: auto;
     max-height: calc(100vh - 160px);
 }
 .alv-empty {
@@ -3819,55 +3819,57 @@ input[type="range"]::-webkit-slider-thumb {
     text-align: center;
     padding: 40px;
 }
-.alv-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 10px;
-    padding: 10px 14px;
-}
-.alv-label {
-    display: flex;
-    align-items: center;
+.alv-grid-row {
+    display: grid;
+    grid-template-columns: 150px repeat(var(--alv-cols), 110px);
     gap: 8px;
-    min-width: 170px;
-    font-size: 13px;
-    font-weight: 600;
-    flex-wrap: wrap;
+    align-items: center;
 }
-.alv-label .flag { font-size: 20px; }
-.alv-label .alv-main {
-    font-size: 10px; padding: 1px 6px; border-radius: 999px;
+.alv-grid-head { position: sticky; top: 0; z-index: 4; background: var(--bg-primary); padding-bottom: 4px; }
+.alv-corner {
+    font-size: 11px; font-weight: 700; color: var(--text-secondary);
+    display: flex; align-items: center; justify-content: center;
+}
+.alv-colhead {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    font-size: 11px; font-weight: 600; text-align: center;
+}
+.alv-colhead .flag { font-size: 18px; }
+.alv-colhead .nm { color: var(--text-secondary); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alv-colhead .alv-main, .alv-main {
+    font-size: 9px; padding: 1px 6px; border-radius: 999px;
     background: var(--accent-subtle-strong); color: var(--accent);
 }
-.alv-label .alv-missing {
-    font-size: 10px; padding: 1px 6px; border-radius: 999px;
-    background: rgba(255,159,10,0.15); color: #ff9f0a;
+.alv-rowlabel {
+    font-size: 12px; font-weight: 600; color: var(--text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    cursor: pointer; padding: 6px 8px; border-radius: 8px;
 }
-.alv-drop {
+.alv-rowlabel:hover { background: var(--bg-tertiary); }
+.alv-rowlabel.active { color: var(--accent); }
+.alv-cell {
     position: relative;
     border: 1.5px dashed transparent;
     border-radius: 8px;
     cursor: pointer;
-    line-height: 0;
+    min-height: 60px;
+    display: flex; align-items: center; justify-content: center;
     transition: border-color 0.15s, background 0.15s;
 }
-.alv-drop.empty {
-    border-color: var(--border-color);
-    background: var(--bg-tertiary);
-    min-width: 150px;
-    min-height: 90px;
+.alv-cell.empty { border-color: var(--border-color); background: var(--bg-tertiary); }
+.alv-cell.dragover { border-color: var(--accent); background: var(--accent-subtle); }
+.alv-cell-body { line-height: 0; }
+.alv-cell-canvas { position: relative; line-height: 0; }
+.alv-cell-canvas canvas { border-radius: 6px; display: block; }
+.alv-guide {
+    position: absolute; top: 0; height: 100%; width: 0;
+    border-left: 1.5px dashed rgba(255,255,255,0.6); pointer-events: none;
 }
-.alv-drop.dragover { border-color: var(--accent); background: var(--accent-subtle); }
-.alv-canvas { border-radius: 6px; display: block; }
 .alv-hint {
-    position: absolute;
-    bottom: 4px; left: 50%; transform: translateX(-50%);
-    font-size: 10px; line-height: 1;
-    background: rgba(0,0,0,0.6); color: #fff;
-    padding: 3px 8px; border-radius: 999px;
+    position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%);
+    font-size: 9px; line-height: 1;
+    background: rgba(0,0,0,0.65); color: #fff;
+    padding: 2px 7px; border-radius: 999px;
     opacity: 0; transition: opacity 0.15s; pointer-events: none;
 }
-.alv-drop:hover .alv-hint, .alv-drop.empty .alv-hint { opacity: 1; }
+.alv-cell:hover .alv-hint, .alv-cell.empty .alv-hint { opacity: 1; }

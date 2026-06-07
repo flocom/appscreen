@@ -362,77 +362,130 @@ function assignFileToScreenshotLang(file, idx, lang) {
     reader.readAsDataURL(file);
 }
 
+// Matrix view: every screenshot (rows) × every language (columns). Cells are
+// rendered in rAF-batched chunks so large matrices never block the UI.
+let _alvRenderToken = 0;
+const ALV_CELL_W = 96;
+
+function renderAlvCell(cell) {
+    const i = +cell.dataset.index;
+    const lang = cell.dataset.lang;
+    const ss = state.screenshots[i];
+    if (!ss) return;
+    const dims = getCanvasDimensions(i);
+    const scale = ALV_CELL_W / dims.width;
+
+    const savedLang = state.currentLanguage;
+    const sH = ss.text.currentHeadlineLang, sS = ss.text.currentSubheadlineLang;
+    state.currentLanguage = lang;
+    ss.text.currentHeadlineLang = lang;
+    ss.text.currentSubheadlineLang = lang;
+    const canvas = document.createElement('canvas');
+    try { renderScreenshotToCanvas(i, canvas, canvas.getContext('2d'), dims, scale); } catch (e) {}
+    state.currentLanguage = savedLang;
+    ss.text.currentHeadlineLang = sH;
+    ss.text.currentSubheadlineLang = sS;
+
+    const dispW = ALV_CELL_W, dispH = ALV_CELL_W * dims.height / dims.width;
+    canvas.style.width = dispW + 'px';
+    canvas.style.height = dispH + 'px';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'alv-cell-canvas';
+    wrap.appendChild(canvas);
+    // Panorama slice guides
+    const span = (ss.screenshot && ss.screenshot.spanScreens) || 1;
+    for (let k = 1; k < span; k++) {
+        const line = document.createElement('div');
+        line.className = 'alv-guide';
+        line.style.left = (dispW * k / span) + 'px';
+        wrap.appendChild(line);
+    }
+    cell.querySelector('.alv-cell-body').replaceChildren(wrap);
+}
+
 function renderAllLanguagesView() {
     const view = document.getElementById('all-languages-view');
     if (!view) return;
+    const token = ++_alvRenderToken; // cancels any in-flight batch render
     view.innerHTML = '';
 
-    const idx = state.selectedIndex;
-    const ss = state.screenshots[idx];
-    if (idx == null || !ss) {
-        view.innerHTML = '<div class="alv-empty">Upload a screenshot to see all languages.</div>';
+    if (!state.screenshots.length) {
+        view.innerHTML = '<div class="alv-empty">Upload screenshots to see them in every language.</div>';
         return;
     }
+    const langs = state.projectLanguages;
 
-    const dims = getCanvasDimensions();
-    const rowW = 150;
-    const previewScale = rowW / dims.width;
+    // Header row: corner + a flag per language.
+    const head = document.createElement('div');
+    head.className = 'alv-grid-row alv-grid-head';
+    head.style.setProperty('--alv-cols', langs.length);
+    const corner = document.createElement('div');
+    corner.className = 'alv-corner';
+    corner.textContent = `${state.screenshots.length}×${langs.length}`;
+    head.appendChild(corner);
+    langs.forEach((lang, c) => {
+        const h = document.createElement('div');
+        h.className = 'alv-colhead';
+        h.innerHTML = `<span class="flag">${languageFlags[lang] || '🏳️'}</span><span class="nm">${languageNames[lang] || lang}</span>${c === 0 ? '<span class="alv-main">Main</span>' : ''}`;
+        head.appendChild(h);
+    });
+    view.appendChild(head);
 
-    const savedLang = state.currentLanguage;
-    const savedH = ss.text.currentHeadlineLang;
-    const savedS = ss.text.currentSubheadlineLang;
-
-    state.projectLanguages.forEach(lang => {
-        const hasImg = !!(ss.localizedImages && ss.localizedImages[lang] && ss.localizedImages[lang].image);
-
-        // Temporarily render this screenshot as if `lang` were current.
-        state.currentLanguage = lang;
-        ss.text.currentHeadlineLang = lang;
-        ss.text.currentSubheadlineLang = lang;
-
-        const canvas = document.createElement('canvas');
-        try { renderScreenshotToCanvas(idx, canvas, canvas.getContext('2d'), dims, previewScale); } catch (e) {}
-        canvas.className = 'alv-canvas';
-        canvas.style.width = rowW + 'px';
-        canvas.style.height = (rowW * dims.height / dims.width) + 'px';
-
+    const cells = [];
+    state.screenshots.forEach((ss, i) => {
         const row = document.createElement('div');
-        row.className = 'alv-row';
-        row.innerHTML = `
-            <div class="alv-label">
-                <span class="flag">${languageFlags[lang] || '🏳️'}</span>
-                <span class="nm">${languageNames[lang] || lang}</span>
-                ${lang === state.projectLanguages[0] ? '<span class="alv-main">Main</span>' : ''}
-                ${hasImg ? '' : '<span class="alv-missing">no image</span>'}
-            </div>`;
-        const dz = document.createElement('div');
-        dz.className = 'alv-drop' + (hasImg ? '' : ' empty');
-        dz.title = 'Drop or click to set the ' + (languageNames[lang] || lang) + ' screenshot';
-        dz.appendChild(canvas);
-        const hint = document.createElement('div');
-        hint.className = 'alv-hint';
-        hint.textContent = hasImg ? 'Replace' : 'Drop image';
-        dz.appendChild(hint);
+        row.className = 'alv-grid-row';
+        row.style.setProperty('--alv-cols', langs.length);
+        const label = document.createElement('div');
+        label.className = 'alv-rowlabel' + (i === state.selectedIndex ? ' active' : '');
+        label.textContent = (typeof screenshotLabel === 'function') ? screenshotLabel(i) : ('Screenshot ' + (i + 1));
+        label.title = 'Click to edit this screenshot';
+        label.addEventListener('click', () => { state.selectedIndex = i; if (typeof updateScreenshotList === 'function') updateScreenshotList(); if (typeof syncUIWithState === 'function') syncUIWithState(); updateCanvas(); });
+        row.appendChild(label);
 
-        const input = document.createElement('input');
-        input.type = 'file'; input.accept = 'image/*'; input.hidden = true;
-        dz.appendChild(input);
-        dz.addEventListener('click', () => input.click());
-        input.addEventListener('change', () => { if (input.files[0]) assignFileToScreenshotLang(input.files[0], idx, lang); });
-        ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); }));
-        ['dragleave', 'dragend'].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover'); }));
-        dz.addEventListener('drop', (e) => {
-            e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
-            if (e.dataTransfer.files[0]) assignFileToScreenshotLang(e.dataTransfer.files[0], idx, lang);
+        langs.forEach(lang => {
+            const hasImg = !!(ss.localizedImages && ss.localizedImages[lang] && ss.localizedImages[lang].image);
+            const cell = document.createElement('div');
+            cell.className = 'alv-cell' + (hasImg ? '' : ' empty');
+            cell.dataset.index = i;
+            cell.dataset.lang = lang;
+            cell.title = `${languageNames[lang] || lang} — drop or click to set this screenshot`;
+            const body = document.createElement('div');
+            body.className = 'alv-cell-body';
+            const hint = document.createElement('div');
+            hint.className = 'alv-hint';
+            hint.textContent = hasImg ? 'Replace' : 'Drop';
+            cell.appendChild(body);
+            cell.appendChild(hint);
+
+            const input = document.createElement('input');
+            input.type = 'file'; input.accept = 'image/*'; input.hidden = true;
+            cell.appendChild(input);
+            cell.addEventListener('click', () => input.click());
+            input.addEventListener('change', () => { if (input.files[0]) assignFileToScreenshotLang(input.files[0], i, lang); });
+            ['dragenter', 'dragover'].forEach(ev => cell.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); cell.classList.add('dragover'); }));
+            ['dragleave', 'dragend'].forEach(ev => cell.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); cell.classList.remove('dragover'); }));
+            cell.addEventListener('drop', (e) => {
+                e.preventDefault(); e.stopPropagation(); cell.classList.remove('dragover');
+                if (e.dataTransfer.files[0]) assignFileToScreenshotLang(e.dataTransfer.files[0], i, lang);
+            });
+            row.appendChild(cell);
+            cells.push(cell);
         });
-
-        row.appendChild(dz);
         view.appendChild(row);
     });
 
-    state.currentLanguage = savedLang;
-    ss.text.currentHeadlineLang = savedH;
-    ss.text.currentSubheadlineLang = savedS;
+    // Render cells in batched chunks so a big matrix never blocks the UI.
+    // setTimeout (not rAF) so it still runs when the tab is backgrounded.
+    let ci = 0;
+    const renderBatch = () => {
+        if (token !== _alvRenderToken) return; // superseded by a newer render
+        const end = Math.min(ci + 14, cells.length);
+        for (; ci < end; ci++) renderAlvCell(cells[ci]);
+        if (ci < cells.length) setTimeout(renderBatch, 0);
+    };
+    renderBatch();
 }
 
 function setCanvasView(view) {
@@ -618,10 +671,40 @@ if (typeof syncUIWithState === 'function') {
     };
 }
 
+// Delete the selected screenshot.
+function deleteSelectedScreenshot() {
+    if (!state.screenshots.length) return;
+    state.screenshots.splice(state.selectedIndex, 1);
+    if (state.selectedIndex >= state.screenshots.length) {
+        state.selectedIndex = Math.max(0, state.screenshots.length - 1);
+    }
+    if (typeof updateScreenshotList === 'function') updateScreenshotList();
+    if (typeof syncUIWithState === 'function') syncUIWithState();
+    if (typeof updateGradientStopsUI === 'function') updateGradientStopsUI();
+    updateCanvas();
+    if (typeof saveState === 'function') saveState();
+}
+
+// Keyboard: Delete / Backspace removes the selected screenshot (unless typing
+// in a field or a modal is open).
+function initDeleteShortcut() {
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+        const t = document.activeElement;
+        const tag = t && t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+        if (document.querySelector('.modal-overlay.visible')) return;
+        if (!state.screenshots.length) return;
+        e.preventDefault();
+        deleteSelectedScreenshot();
+    });
+}
+
 function initAllExtras() {
     initAppStoreFeatures();
     initCanvasViewToggle();
     initDeviceTextExtras();
+    initDeleteShortcut();
     try { syncDeviceTextExtras(); } catch (e) {}
 }
 
