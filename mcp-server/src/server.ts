@@ -342,6 +342,27 @@ async function runStdio() {
 
 async function runHttp(port: number) {
   const app = express();
+
+  // CORS so a browser (e.g. the appscreen web app's Settings → MCP connection)
+  // can reach this server. Override the allowed origin with MCP_CORS_ORIGIN.
+  const corsOrigin = process.env.MCP_CORS_ORIGIN || "*";
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", corsOrigin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, Accept, mcp-session-id, mcp-protocol-version, last-event-id",
+    );
+    res.header("Access-Control-Expose-Headers", "mcp-session-id");
+    res.header("Access-Control-Max-Age", "86400");
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
   app.use(express.json({ limit: "50mb" }));
 
   // Stateless: a fresh server+transport per request (simple and robust).
