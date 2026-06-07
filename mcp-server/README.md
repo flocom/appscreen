@@ -184,13 +184,29 @@ subheadline `50/400` at 70% opacity, drop shadow on).
 ### Images: sending in & getting back
 
 **Send images in** — any field that takes an image (`screenshot.image`, `background.image`,
-`elements[].image`) accepts three forms:
+`elements[].image`) accepts these forms:
 
 | Form | Example | Notes |
 |------|---------|-------|
-| **Data URL** | `data:image/png;base64,iVBORw0KGgo…` | Most reliable for inline images / AI agents. |
+| **Upload ref** | `appscreen-file://ab12…` | Upload the bytes once via `POST /upload`, pass the returned `ref`. **Best for large images** — no base64 in the request. |
+| **http(s) URL** | `https://cdn.example.com/shot.png` | The server fetches it. Use any hosted image. |
+| **Data URL** | `data:image/png;base64,iVBORw0KGgo…` | Convenient for small inline images. |
 | **Raw base64** | `iVBORw0KGgo…` / `/9j/…` | PNG, JPEG, GIF, WebP, BMP auto-detected by signature. |
 | **File path** | `/work/shot.png` | Must exist on the **server's** filesystem (in Docker, mount it, e.g. `-v ./work:/work`). |
+
+**Uploading large images (avoid base64)** — `POST /upload` accepts the raw image bytes (not
+base64) and returns a short-lived reference, so neither the upload nor the render call carries a
+giant base64 string:
+
+```bash
+curl -X POST "https://appscreen.example.com/upload?ttl=600" \
+     -H "Content-Type: image/png" --data-binary @shot.png
+# → { "ref": "appscreen-file://ab12…", "url": "https://…/files/ab12….png", "bytes": 408200, "expiresIn": 600 }
+```
+
+Then pass `"image": "appscreen-file://ab12…"` to `generate_screenshot`. The ref is resolved
+straight from memory (no round-trip), auto-deletes after `ttl` seconds (default 3600), and works
+through the Cloudflare Tunnel. This is the recommended Mac → remote-server path for big screenshots.
 
 **Get the rendered image back** — three ways, via the `deliver` parameter:
 

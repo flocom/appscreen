@@ -45,7 +45,7 @@ const background = z
     image: z
       .string()
       .optional()
-      .describe("Background image: file path, data URL, or base64 (type=image)"),
+      .describe("Background image: http(s) URL, appscreen-file:// ref (from POST /upload), data URL, raw base64, or a server file path (type=image)"),
     imageFit: z.enum(["cover", "contain", "stretch"]).optional(),
     imageBlur: z.number().min(0).optional(),
     overlayColor: z.string().optional(),
@@ -76,7 +76,7 @@ const screenshot = z
     image: z
       .string()
       .optional()
-      .describe("App screenshot to place: file path, data URL, or base64"),
+      .describe("App screenshot: http(s) URL, appscreen-file:// ref (from POST /upload), data URL, raw base64, or a server file path"),
     scale: z.number().min(1).max(200).optional().describe("% of canvas width (default 70)"),
     x: z.number().min(0).max(100).optional().describe("Horizontal position, 50=center"),
     y: z.number().min(0).max(100).optional().describe("Vertical position (default 60)"),
@@ -145,7 +145,7 @@ const element = z
     // emoji
     emoji: z.string().optional(),
     // icon / graphic
-    image: z.string().optional().describe("Image: file path, data URL, or base64"),
+    image: z.string().optional().describe("Image: http(s) URL, appscreen-file:// ref, data URL, raw base64, or a server file path"),
     iconShadow: shadow.optional(),
   })
   .describe("A free-floating overlay element");
@@ -420,17 +420,41 @@ async function runHttp(port: number) {
     next();
   });
 
-  app.use(express.json({ limit: "50mb" }));
-
-  // Public base URL used to build temporary download links. Prefer an explicit
-  // PUBLIC_BASE_URL (correct behind proxies/tunnels); otherwise derive it from
-  // the request, honoring X-Forwarded-* set by reverse proxies.
+  // Public base URL used to build links. Prefer an explicit PUBLIC_BASE_URL
+  // (correct behind proxies/tunnels); otherwise derive it from the request,
+  // honoring X-Forwarded-* set by reverse proxies.
   const publicBaseUrlFor = (req: express.Request): string | undefined => {
     if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
     const proto = String(req.headers["x-forwarded-proto"] || req.protocol).split(",")[0].trim();
     const host = String(req.headers["x-forwarded-host"] || req.get("host") || "").split(",")[0].trim();
     return host ? `${proto}://${host}` : undefined;
   };
+
+  // Binary upload endpoint (raw image bytes — no base64). Must come before the
+  // JSON parser so it isn't intercepted. Returns a reference to pass as an
+  // `image` field, avoiding huge base64 in the MCP request.
+  app.post("/upload", express.raw({ type: "*/*", limit: "50mb" }), (req, res) => {
+    const buf = req.body as Buffer;
+    if (!Buffer.isBuffer(buf) || buf.length === 0) {
+      res.status(400).json({ error: "empty body — POST the raw image bytes" });
+      return;
+    }
+    const mime = (req.headers["content-type"] || "image/png").split(";")[0].trim();
+    const ttlSec = Math.max(10, Math.min(parseInt(String(req.query.ttl || "3600"), 10) || 3600, 86400));
+    const id = putFile(buf, mime, ttlSec * 1000);
+    const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    const base = publicBaseUrlFor(req);
+    res.json({
+      id,
+      ref: `appscreen-file://${id}`, // pass this as an `image` field (no round-trip)
+      url: base ? `${base}/files/${id}.${ext}` : undefined,
+      mime,
+      bytes: buf.length,
+      expiresIn: ttlSec,
+    });
+  });
+
+  app.use(express.json({ limit: "50mb" }));
 
   // Stateless: a fresh server+transport per request (simple and robust).
   app.post("/mcp", async (req, res) => {
