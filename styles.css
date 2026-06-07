@@ -3666,3 +3666,98 @@ input[type="range"]::-webkit-slider-thumb {
     cursor: pointer;
 }
 .lang-sync-row input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+/* ===== "All languages" canvas view ===== */
+.canvas-view-toggle {
+    display: flex;
+    gap: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 3px;
+    margin: 0 auto 12px;
+    width: fit-content;
+}
+.canvas-view-toggle button {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.canvas-view-toggle button.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.all-languages-view {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 8px 4px 24px;
+    overflow-y: auto;
+    max-height: calc(100vh - 160px);
+}
+.alv-empty {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 40px;
+}
+.alv-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+.alv-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 170px;
+    font-size: 13px;
+    font-weight: 600;
+    flex-wrap: wrap;
+}
+.alv-label .flag { font-size: 20px; }
+.alv-label .alv-main {
+    font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: var(--accent-subtle-strong); color: var(--accent);
+}
+.alv-label .alv-missing {
+    font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: rgba(255,159,10,0.15); color: #ff9f0a;
+}
+.alv-drop {
+    position: relative;
+    border: 1.5px dashed transparent;
+    border-radius: 8px;
+    cursor: pointer;
+    line-height: 0;
+    transition: border-color 0.15s, background 0.15s;
+}
+.alv-drop.empty {
+    border-color: var(--border-color);
+    background: var(--bg-tertiary);
+    min-width: 150px;
+    min-height: 90px;
+}
+.alv-drop.dragover { border-color: var(--accent); background: var(--accent-subtle); }
+.alv-canvas { border-radius: 6px; display: block; }
+.alv-hint {
+    position: absolute;
+    bottom: 4px; left: 50%; transform: translateX(-50%);
+    font-size: 10px; line-height: 1;
+    background: rgba(0,0,0,0.6); color: #fff;
+    padding: 3px 8px; border-radius: 999px;
+    opacity: 0; transition: opacity 0.15s; pointer-events: none;
+}
+.alv-drop:hover .alv-hint, .alv-drop.empty .alv-hint { opacity: 1; }

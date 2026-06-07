@@ -297,6 +297,10 @@
 
         <!-- Main Canvas Area -->
         <div class="canvas-area">
+            <div class="canvas-view-toggle" id="canvas-view-toggle">
+                <button data-view="single" class="active">Single</button>
+                <button data-view="all-languages">All languages</button>
+            </div>
             <div class="preview-strip">
                 <div class="side-preview side-preview-far-left" id="side-preview-far-left">
                     <canvas id="preview-canvas-far-left"></canvas>
@@ -323,6 +327,7 @@
                     <canvas id="preview-canvas-far-right"></canvas>
                 </div>
             </div>
+            <div id="all-languages-view" class="all-languages-view" style="display:none;"></div>
         </div>
 
         <!-- Right Sidebar - Settings -->
