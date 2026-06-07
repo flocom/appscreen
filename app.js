@@ -4058,8 +4058,10 @@ function setupEventListeners() {
     const mcpConnectBtn = document.getElementById('mcp-connect-btn');
     if (mcpConnectBtn) {
         mcpConnectBtn.addEventListener('click', () => {
-            const url = document.getElementById('settings-mcp-url').value.trim();
+            const url = normalizeMcpUrl(document.getElementById('settings-mcp-url').value.trim());
             const token = document.getElementById('settings-mcp-token').value.trim();
+            // Reflect the corrected URL back into the field.
+            document.getElementById('settings-mcp-url').value = url;
             // Persist immediately so a successful connection survives reloads.
             if (url) localStorage.setItem('mcpServerUrl', url); else localStorage.removeItem('mcpServerUrl');
             if (token) localStorage.setItem('mcpServerToken', token); else localStorage.removeItem('mcpServerToken');
@@ -5849,7 +5851,15 @@ function openSettingsModal() {
     // Load saved MCP server config and reflect last known connection state
     const mcpUrlInput = document.getElementById('settings-mcp-url');
     const mcpTokenInput = document.getElementById('settings-mcp-token');
-    const savedMcpUrl = localStorage.getItem('mcpServerUrl');
+    let savedMcpUrl = localStorage.getItem('mcpServerUrl');
+    // Self-heal a stale saved URL (e.g. https://host:3000/mcp from before the fix).
+    if (savedMcpUrl) {
+        const fixed = normalizeMcpUrl(savedMcpUrl);
+        if (fixed !== savedMcpUrl) {
+            savedMcpUrl = fixed;
+            localStorage.setItem('mcpServerUrl', fixed);
+        }
+    }
     if (mcpUrlInput) mcpUrlInput.value = savedMcpUrl || defaultMcpUrl();
     if (mcpTokenInput) {
         mcpTokenInput.value = localStorage.getItem('mcpServerToken') || '';
@@ -5885,7 +5895,7 @@ function saveSettings() {
     localStorage.setItem('aiProvider', selectedProvider);
 
     // Save MCP server config
-    const mcpUrl = (document.getElementById('settings-mcp-url')?.value || '').trim();
+    const mcpUrl = normalizeMcpUrl((document.getElementById('settings-mcp-url')?.value || '').trim());
     const mcpToken = (document.getElementById('settings-mcp-token')?.value || '').trim();
     if (mcpUrl) localStorage.setItem('mcpServerUrl', mcpUrl); else localStorage.removeItem('mcpServerUrl');
     if (mcpToken) localStorage.setItem('mcpServerToken', mcpToken); else localStorage.removeItem('mcpServerToken');
@@ -5954,6 +5964,22 @@ function defaultMcpUrl() {
         }
     } catch (e) { /* ignore */ }
     return 'http://localhost:3000/mcp';
+}
+
+// Auto-correct a known-broken MCP URL: HTTPS on port 3000 is never a real
+// deployment (3000 is a dev HTTP port, and Cloudflare won't proxy it) — drop the
+// port so it targets 443. Leaves everything else untouched. Used on display and
+// on input so a stale saved value like https://host:3000/mcp self-heals.
+function normalizeMcpUrl(url) {
+    if (!url) return url;
+    try {
+        const u = new URL(url);
+        if (u.protocol === 'https:' && u.port === '3000') {
+            u.port = '';
+            return u.toString();
+        }
+    } catch (e) { /* not a URL — leave as typed */ }
+    return url;
 }
 
 function mcpEscapeHtml(s) {
