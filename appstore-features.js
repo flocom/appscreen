@@ -757,6 +757,18 @@ function renderPerScreenTextUI() {
     box.querySelector('#per-screen-text-toggle').addEventListener('click', function () {
         this.classList.toggle('active');
         txt.perScreenText = this.classList.contains('active');
+        // When turning on, seed panel 1 with the existing single text so it
+        // doesn't suddenly go blank.
+        if (txt.perScreenText) {
+            txt.panelHeadlines = txt.panelHeadlines || {};
+            txt.panelSubheadlines = txt.panelSubheadlines || {};
+            txt.panelHeadlines[lang] = txt.panelHeadlines[lang] || [];
+            txt.panelSubheadlines[lang] = txt.panelSubheadlines[lang] || [];
+            const emptyH = txt.panelHeadlines[lang].every(v => !v);
+            const emptyS = txt.panelSubheadlines[lang].every(v => !v);
+            if (emptyH && txt.headlines && txt.headlines[lang]) txt.panelHeadlines[lang][0] = txt.headlines[lang];
+            if (emptyS && txt.subheadlines && txt.subheadlines[lang]) txt.panelSubheadlines[lang][0] = txt.subheadlines[lang];
+        }
         renderPerScreenTextUI();
         updateCanvas();
     });
