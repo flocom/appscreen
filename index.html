@@ -552,10 +552,20 @@
 
                 <div class="control-group" id="device-model-2d-group">
                     <label class="control-label">Device Model</label>
+                    <div class="btn-group" id="device-model-2d-selector">
+                        <button class="active" data-model2d="iphone">iPhone</button>
+                        <button data-model2d="samsung">Samsung</button>
+                    </div>
+                    <div class="toggle-row" style="margin-top: 10px;">
+                        <span class="toggle-label">Device bezel</span>
+                        <div class="toggle" id="bezel-toggle"></div>
+                    </div>
+                    <label class="control-label" style="margin-top: 10px;">Notch / Camera</label>
                     <div class="btn-group" id="notch-selector">
-                        <button class="active" data-notch="none">No Notch</button>
-                        <button data-notch="island">Dynamic Island</button>
+                        <button class="active" data-notch="none">None</button>
+                        <button data-notch="island">Island</button>
                         <button data-notch="notch">Notch</button>
+                        <button data-notch="punch">Punch</button>
                     </div>
                 </div>
 

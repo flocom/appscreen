@@ -470,8 +470,40 @@ function initCanvasViewToggle() {
 // ============================================================================
 // Device notch (2D "Device Model") + text background controls
 // ============================================================================
+// iPhone vs Samsung corner-radius defaults (slider value; render scales it).
+const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34 };
+
 function initDeviceTextExtras() {
-    // 2D notch / Device Model selector
+    // 2D Device Model (iPhone / Samsung) — auto-adapts corner radius + notch.
+    document.querySelectorAll('#device-model-2d-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const model = btn.dataset.model2d;
+            document.querySelectorAll('#device-model-2d-selector button').forEach(b => b.classList.toggle('active', b === btn));
+            setScreenshotSetting('deviceModel2D', model);
+            // Adapt corner radius to the model
+            const r = DEVICE_2D_RADIUS[model] ?? 24;
+            setScreenshotSetting('cornerRadius', r);
+            const slider = document.getElementById('corner-radius');
+            const val = document.getElementById('corner-radius-value');
+            if (slider) slider.value = r;
+            if (val) val.textContent = r + 'px';
+            // Sensible default notch for the model
+            const defNotch = model === 'samsung' ? 'punch' : 'island';
+            setScreenshotSetting('frame.notch', defNotch);
+            document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === defNotch));
+            updateCanvas();
+        });
+    });
+
+    // Device bezel toggle
+    const bezelToggle = document.getElementById('bezel-toggle');
+    if (bezelToggle) bezelToggle.addEventListener('click', function () {
+        this.classList.toggle('active');
+        setScreenshotSetting('bezelEnabled', this.classList.contains('active'));
+        updateCanvas();
+    });
+
+    // Notch / camera selector
     document.querySelectorAll('#notch-selector button').forEach(btn => {
         btn.addEventListener('click', () => {
             document.querySelectorAll('#notch-selector button').forEach(b => b.classList.remove('active'));
@@ -504,8 +536,18 @@ function syncDeviceTextExtras() {
     if (ss) {
         const notch = (ss.frame && ss.frame.notch) || 'none';
         document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === notch));
+        const model2d = ss.deviceModel2D || 'iphone';
+        document.querySelectorAll('#device-model-2d-selector button').forEach(b => b.classList.toggle('active', b.dataset.model2d === model2d));
+        const bezelToggle = document.getElementById('bezel-toggle');
+        if (bezelToggle) bezelToggle.classList.toggle('active', !!ss.bezelEnabled);
+        // In 3D, the notch still applies (baked into the texture) but the bezel/model
+        // selectors are 2D-only; keep the Notch sub-control visible, hide the rest.
         const group = document.getElementById('device-model-2d-group');
-        if (group) group.style.display = ss.use3D ? 'none' : 'block';
+        if (group) group.style.display = 'block';
+        const sel = document.getElementById('device-model-2d-selector');
+        const bz = bezelToggle ? bezelToggle.closest('.toggle-row') : null;
+        if (sel) sel.style.display = ss.use3D ? 'none' : 'flex';
+        if (bz) bz.style.display = ss.use3D ? 'none' : 'flex';
     }
     if (txt) {
         const setCtl = (colorId, opacityId, valueId, color, opacity) => {
