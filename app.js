@@ -37,6 +37,7 @@ const state = {
             cornerRadius: 24,
             deviceModel2D: 'iphone', // 2D device model: 'iphone' | 'samsung'
             bezelEnabled: false,      // draw a device bezel/shell in 2D
+            spanScreens: 1,           // panorama: span this screenshot across N output slots
             use3D: false,
             device3D: 'iphone',
             rotation3D: { x: 0, y: 0, z: 0 },
@@ -7025,11 +7026,15 @@ function updateGradientStopsUI() {
     });
 }
 
-function getCanvasDimensions() {
-    if (state.outputDevice === 'custom') {
-        return { width: state.customWidth, height: state.customHeight };
-    }
-    return deviceDimensions[state.outputDevice];
+function getCanvasDimensions(index) {
+    const base = state.outputDevice === 'custom'
+        ? { width: state.customWidth, height: state.customHeight }
+        : deviceDimensions[state.outputDevice];
+    // Panorama: a screenshot can span N output slots → render at N× width.
+    const i = index === undefined ? state.selectedIndex : index;
+    const ss = state.screenshots[i];
+    const span = (ss && ss.screenshot && ss.screenshot.spanScreens) || 1;
+    return { width: base.width * span, height: base.height, span: span, baseWidth: base.width };
 }
 
 function updateCanvas() {
@@ -7128,7 +7133,7 @@ function updateSidePreviews() {
         sidePreviewLeft.style.right = `calc(50% + ${sideOffset}px)`;
         // Skip render if already pre-rendered during slide transition
         if (!skipSidePreviewRender) {
-            renderScreenshotToCanvas(prevIndex, canvasLeft, ctxLeft, dims, previewScale);
+            renderScreenshotToCanvas(prevIndex, canvasLeft, ctxLeft, getCanvasDimensions(prevIndex), previewScale);
         }
         // Click to select previous with animation
         sidePreviewLeft.onclick = () => {
@@ -7144,7 +7149,7 @@ function updateSidePreviews() {
     if (farPrevIndex >= 0 && state.screenshots.length > 2) {
         sidePreviewFarLeft.classList.remove('hidden');
         sidePreviewFarLeft.style.right = `calc(50% + ${farSideOffset}px)`;
-        renderScreenshotToCanvas(farPrevIndex, canvasFarLeft, ctxFarLeft, dims, previewScale);
+        renderScreenshotToCanvas(farPrevIndex, canvasFarLeft, ctxFarLeft, getCanvasDimensions(farPrevIndex), previewScale);
     } else {
         sidePreviewFarLeft.classList.add('hidden');
     }
@@ -7156,7 +7161,7 @@ function updateSidePreviews() {
         sidePreviewRight.style.left = `calc(50% + ${sideOffset}px)`;
         // Skip render if already pre-rendered during slide transition
         if (!skipSidePreviewRender) {
-            renderScreenshotToCanvas(nextIndex, canvasRight, ctxRight, dims, previewScale);
+            renderScreenshotToCanvas(nextIndex, canvasRight, ctxRight, getCanvasDimensions(nextIndex), previewScale);
         }
         // Click to select next with animation
         sidePreviewRight.onclick = () => {
@@ -7172,7 +7177,7 @@ function updateSidePreviews() {
     if (farNextIndex < state.screenshots.length && state.screenshots.length > 2) {
         sidePreviewFarRight.classList.remove('hidden');
         sidePreviewFarRight.style.left = `calc(50% + ${farSideOffset}px)`;
-        renderScreenshotToCanvas(farNextIndex, canvasFarRight, ctxFarRight, dims, previewScale);
+        renderScreenshotToCanvas(farNextIndex, canvasFarRight, ctxFarRight, getCanvasDimensions(farNextIndex), previewScale);
     } else {
         sidePreviewFarRight.classList.add('hidden');
     }
@@ -8420,6 +8425,23 @@ function hexToRgba(hex, alpha) {
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// Slice a (possibly panoramic) canvas into `span` equal vertical panels.
+// Returns an array of PNG data URLs, left-to-right.
+function sliceCanvasToPanels(srcCanvas, span) {
+    if (!span || span <= 1) return [srcCanvas.toDataURL('image/png')];
+    const panelW = Math.round(srcCanvas.width / span);
+    const urls = [];
+    for (let k = 0; k < span; k++) {
+        const c = document.createElement('canvas');
+        c.width = panelW;
+        c.height = srcCanvas.height;
+        const cx = c.getContext('2d');
+        cx.drawImage(srcCanvas, k * panelW, 0, panelW, srcCanvas.height, 0, 0, panelW, srcCanvas.height);
+        urls.push(c.toDataURL('image/png'));
+    }
+    return urls;
+}
+
 async function exportCurrent() {
     if (state.screenshots.length === 0) {
         await showAppAlert('Please upload a screenshot first', 'info');
@@ -8429,10 +8451,16 @@ async function exportCurrent() {
     // Ensure canvas is up-to-date (especially important for 3D mode)
     updateCanvas();
 
-    const link = document.createElement('a');
-    link.download = `screenshot-${state.selectedIndex + 1}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+    const span = (state.screenshots[state.selectedIndex]?.screenshot?.spanScreens) || 1;
+    const panels = sliceCanvasToPanels(canvas, span);
+    panels.forEach((url, k) => {
+        const link = document.createElement('a');
+        link.download = span > 1
+            ? `screenshot-${state.selectedIndex + 1}-panel-${k + 1}.png`
+            : `screenshot-${state.selectedIndex + 1}.png`;
+        link.href = url;
+        link.click();
+    });
 }
 
 async function exportAll() {
@@ -8502,6 +8530,8 @@ async function exportAllForLanguage(lang) {
         s.text.currentSubheadlineLang = lang;
     });
 
+    let panelNum = 1; // running counter so panorama panels stay in order
+    const pad = (n) => String(n).padStart(2, '0');
     for (let i = 0; i < state.screenshots.length; i++) {
         state.selectedIndex = i;
         updateCanvas();
@@ -8512,11 +8542,13 @@ async function exportAllForLanguage(lang) {
 
         await new Promise(resolve => setTimeout(resolve, 100));
 
-        // Get canvas data as base64, strip the data URL prefix
-        const dataUrl = canvas.toDataURL('image/png');
-        const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
-
-        zip.file(`screenshot-${i + 1}.png`, base64Data, { base64: true });
+        // Slice into panels for panoramic screenshots (span > 1)
+        const span = (state.screenshots[i]?.screenshot?.spanScreens) || 1;
+        const panels = sliceCanvasToPanels(canvas, span);
+        panels.forEach((dataUrl) => {
+            const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+            zip.file(`screenshot-${pad(panelNum++)}.png`, base64Data, { base64: true });
+        });
     }
 
     // Restore original settings

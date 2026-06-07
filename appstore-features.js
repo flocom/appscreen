@@ -458,7 +458,39 @@ if (typeof updateCanvas === 'function') {
     updateCanvas = function () {
         _origUpdateCanvas.apply(this, arguments);
         scheduleAlvRender();
+        try { updateSpanGuides(); } catch (e) {}
     };
+}
+
+// Dashed guide lines over the preview showing where a panorama is sliced.
+// Rendered as a DOM overlay (not on the canvas) so it never affects exports.
+function updateSpanGuides() {
+    const wrapper = document.getElementById('canvas-wrapper');
+    const canvasEl = document.getElementById('preview-canvas');
+    if (!wrapper || !canvasEl) return;
+    let overlay = document.getElementById('span-guides');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'span-guides';
+        overlay.style.cssText = 'position:absolute;pointer-events:none;z-index:6;';
+        if (getComputedStyle(wrapper).position === 'static') wrapper.style.position = 'relative';
+        wrapper.appendChild(overlay);
+    }
+    const ss = state.screenshots[state.selectedIndex];
+    const span = (ss && ss.screenshot && ss.screenshot.spanScreens) || 1;
+    const w = canvasEl.offsetWidth, h = canvasEl.offsetHeight;
+    overlay.style.left = canvasEl.offsetLeft + 'px';
+    overlay.style.top = canvasEl.offsetTop + 'px';
+    overlay.style.width = w + 'px';
+    overlay.style.height = h + 'px';
+    overlay.innerHTML = '';
+    if (span <= 1) { overlay.style.display = 'none'; return; }
+    overlay.style.display = 'block';
+    for (let k = 1; k < span; k++) {
+        const line = document.createElement('div');
+        line.style.cssText = `position:absolute;top:0;left:${w * k / span}px;width:0;height:${h}px;border-left:2px dashed rgba(255,255,255,0.55);`;
+        overlay.appendChild(line);
+    }
 }
 
 function initCanvasViewToggle() {
@@ -513,6 +545,17 @@ function initDeviceTextExtras() {
         });
     });
 
+    // Span screens (panorama)
+    document.querySelectorAll('#span-screens-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#span-screens-selector button').forEach(b => b.classList.toggle('active', b === btn));
+            setScreenshotSetting('spanScreens', parseInt(btn.dataset.span, 10));
+            const hint = document.getElementById('span-hint');
+            if (hint) hint.style.display = parseInt(btn.dataset.span, 10) > 1 ? 'block' : 'none';
+            updateCanvas();
+        });
+    });
+
     // Text background (color + opacity) for headline & subheadline
     const bindBg = (colorId, opacityId, valueId, colorKey, opacityKey) => {
         const color = document.getElementById(colorId);
@@ -540,6 +583,10 @@ function syncDeviceTextExtras() {
         document.querySelectorAll('#device-model-2d-selector button').forEach(b => b.classList.toggle('active', b.dataset.model2d === model2d));
         const bezelToggle = document.getElementById('bezel-toggle');
         if (bezelToggle) bezelToggle.classList.toggle('active', !!ss.bezelEnabled);
+        const span = ss.spanScreens || 1;
+        document.querySelectorAll('#span-screens-selector button').forEach(b => b.classList.toggle('active', parseInt(b.dataset.span, 10) === span));
+        const spanHint = document.getElementById('span-hint');
+        if (spanHint) spanHint.style.display = span > 1 ? 'block' : 'none';
         // In 3D, the notch still applies (baked into the texture) but the bezel/model
         // selectors are 2D-only; keep the Notch sub-control visible, hide the rest.
         const group = document.getElementById('device-model-2d-group');
