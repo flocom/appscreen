@@ -3768,6 +3768,14 @@ function setupEventListeners() {
         document.getElementById('project-name-input').focus();
     });
 
+    document.getElementById('duplicate-project-btn').addEventListener('click', async () => {
+        const project = projects.find(p => p.id === currentProjectId);
+        const baseName = project ? project.name : 'Project';
+        saveState(); // flush pending edits so the copy includes the latest images/settings
+        await duplicateProject(currentProjectId, baseName + ' (Copy)');
+        await showAppAlert('Project duplicated with all screenshots, images and settings.', 'success');
+    });
+
     document.getElementById('delete-project-btn').addEventListener('click', async () => {
         if (projects.length <= 1) {
             await showAppAlert('Cannot delete the only project', 'info');
@@ -3822,30 +3830,41 @@ function setupEventListeners() {
         document.getElementById('delete-project-modal').classList.remove('visible');
     });
 
-    // Export project backup
+    // Export the CURRENT project as a self-contained backup (images + every
+    // setting). The project record already embeds each screenshot's images as
+    // base64 (src / localizedImages), so a single JSON round-trips everything.
     document.getElementById('export-project-btn').addEventListener('click', async () => {
         if (!db) return;
         try {
-            const dump = {};
-            for (const name of db.objectStoreNames) {
-                const tx = db.transaction(name, 'readonly');
-                const store = tx.objectStore(name);
-                dump[name] = await new Promise((resolve) => {
-                    const req = store.getAll();
-                    req.onsuccess = () => resolve(req.result);
-                    req.onerror = () => resolve([]);
-                });
-            }
-            const json = JSON.stringify(dump, null, 2);
+            saveState(); // flush pending edits so the latest images/settings are on disk
+            const rec = await new Promise((resolve, reject) => {
+                const tx = db.transaction(PROJECTS_STORE, 'readonly');
+                const req = tx.objectStore(PROJECTS_STORE).get(currentProjectId);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            if (!rec) { await showAppAlert('No project data to export.', 'error'); return; }
+            const meta = projects.find(p => p.id === currentProjectId);
+            const backup = {
+                type: 'appscreen-project-backup',
+                version: 1,
+                exportedAt: new Date().toISOString(),
+                name: meta ? meta.name : 'Project',
+                data: rec
+            };
+            // No pretty-printing: keeps the file small and avoids hitting string
+            // limits on large (100+ MB) image payloads.
+            const json = JSON.stringify(backup);
             const blob = new Blob([json], { type: 'application/json' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'appscreen-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+            const safe = (meta ? meta.name : 'project').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'project';
+            a.download = `appscreen-${safe}-${new Date().toISOString().slice(0, 10)}.json`;
             a.click();
-            URL.revokeObjectURL(a.href);
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
         } catch (e) {
             console.error('Export failed:', e);
-            alert('Export failed: ' + e.message);
+            await showAppAlert('Export failed: ' + e.message, 'error');
         }
     });
 
@@ -3859,24 +3878,47 @@ function setupEventListeners() {
         if (!file || !db) return;
         try {
             const text = await file.text();
-            const dump = JSON.parse(text);
-            for (const storeName of Object.keys(dump)) {
-                if (!db.objectStoreNames.contains(storeName)) continue;
-                const tx = db.transaction(storeName, 'readwrite');
-                const store = tx.objectStore(storeName);
-                for (const record of dump[storeName]) {
-                    store.put(record);
-                }
+            const parsed = JSON.parse(text);
+
+            if (parsed && parsed.type === 'appscreen-project-backup' && parsed.data) {
+                // New per-project backup → import as a NEW project (never overwrites,
+                // and can be imported repeatedly / on another machine). Images and all
+                // settings are restored from the embedded project record.
+                const newId = 'project_' + Date.now();
+                const data = parsed.data;
+                data.id = newId;
+                let name = parsed.name || 'Imported Project';
+                if (projects.some(p => p.name === name)) name += ' (Imported)';
                 await new Promise((resolve, reject) => {
+                    const tx = db.transaction(PROJECTS_STORE, 'readwrite');
+                    tx.objectStore(PROJECTS_STORE).put(data);
                     tx.oncomplete = resolve;
                     tx.onerror = () => reject(tx.error);
                 });
+                projects.push({ id: newId, name, screenshotCount: (data.screenshots && data.screenshots.length) || 0 });
+                saveProjectsMeta();
+                await switchProject(newId);
+                updateProjectSelector();
+                await showAppAlert(`Imported "${name}" with all screenshots, images and settings.`, 'success');
+            } else {
+                // Legacy full-database dump (keyed by object-store name) → restore as-is.
+                const dump = parsed;
+                for (const storeName of Object.keys(dump)) {
+                    if (!db.objectStoreNames.contains(storeName)) continue;
+                    const tx = db.transaction(storeName, 'readwrite');
+                    const store = tx.objectStore(storeName);
+                    for (const record of dump[storeName]) store.put(record);
+                    await new Promise((resolve, reject) => {
+                        tx.oncomplete = resolve;
+                        tx.onerror = () => reject(tx.error);
+                    });
+                }
+                await showAppAlert('Backup imported. Reloading…', 'success');
+                location.reload();
             }
-            alert('Import complete! Reloading...');
-            location.reload();
         } catch (e) {
             console.error('Import failed:', e);
-            alert('Import failed: ' + e.message);
+            await showAppAlert('Import failed: ' + e.message, 'error');
         }
         importInput.value = '';
     });
