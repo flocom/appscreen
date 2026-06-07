@@ -4083,3 +4083,10 @@ input[id$="-hex"].color-invalid { border-color: #ff453a; }
     margin-bottom: 8px;
 }
 .control-label-row .control-label { margin: 0; }
+
+/* Text Background: revealed controls with a full-width opacity slider */
+.text-bg-controls { margin-top: 8px; }
+.text-bg-controls .opacity-row { display: flex; align-items: center; gap: 8px; }
+.text-bg-controls .opacity-row .mini-label { font-size: 11px; color: #8a8a8f; flex-shrink: 0; }
+.text-bg-controls .opacity-row input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.text-bg-controls .opacity-row .range-value { flex-shrink: 0; min-width: 38px; text-align: right; }
