@@ -63,6 +63,10 @@ const state = {
             headlineBgOpacity: 0, // 0 = no text background
             subheadlineBgColor: '#000000',
             subheadlineBgOpacity: 0,
+            subheadlineSpacing: 0, // extra px between title and subtitle
+            perScreenText: false,  // panorama: a separate text per screen panel
+            panelHeadlines: {},    // { lang: [text per panel] }
+            panelSubheadlines: {},
             headlines: { en: '' },
             headlineLanguages: ['en'],
             currentHeadlineLang: 'en',
@@ -1923,6 +1927,10 @@ function resetStateToDefaults() {
             headlineBgOpacity: 0, // 0 = no text background
             subheadlineBgColor: '#000000',
             subheadlineBgOpacity: 0,
+            subheadlineSpacing: 0, // extra px between title and subtitle
+            perScreenText: false,  // panorama: a separate text per screen panel
+            panelHeadlines: {},    // { lang: [text per panel] }
+            panelSubheadlines: {},
             headlines: { en: '' },
             headlineLanguages: ['en'],
             currentHeadlineLang: 'en',
@@ -7335,7 +7343,7 @@ function renderScreenshotToCanvas(index, targetCanvas, targetCtx, dims, previewS
 
     // Draw text
     const txt = screenshot.text;
-    drawTextToContext(targetCtx, dims, txt);
+    drawTextWithPanorama(targetCtx, dims, txt);
 
     // Elements above text
     drawElementsToContext(targetCtx, dims, elements, 'above-text');
@@ -7601,6 +7609,35 @@ function drawTextHighlight(context, cx, y, textWidth, fontSize, baselineTop, col
     context.restore();
 }
 
+// Panorama: build a per-panel copy of the text settings for screen `p`.
+function makePanelTxt(txt, p) {
+    const lang = txt.currentHeadlineLang || 'en';
+    const slang = txt.currentSubheadlineLang || 'en';
+    const ph = (txt.panelHeadlines && txt.panelHeadlines[lang] && txt.panelHeadlines[lang][p]) || '';
+    const ps = (txt.panelSubheadlines && txt.panelSubheadlines[slang] && txt.panelSubheadlines[slang][p]) || '';
+    return Object.assign({}, txt, {
+        headlines: Object.assign({}, txt.headlines, { [lang]: ph }),
+        subheadlines: Object.assign({}, txt.subheadlines, { [slang]: ps }),
+        perScreenText: false
+    });
+}
+
+// Draw text, honoring per-screen panorama text (one text block centered per panel).
+function drawTextWithPanorama(context, dims, txt) {
+    const span = dims.span || 1;
+    if (txt && txt.perScreenText && span > 1) {
+        const baseW = dims.baseWidth || (dims.width / span);
+        for (let p = 0; p < span; p++) {
+            context.save();
+            context.translate(p * baseW, 0);
+            drawTextToContext(context, { width: baseW, height: dims.height }, makePanelTxt(txt, p));
+            context.restore();
+        }
+    } else {
+        drawTextToContext(context, dims, txt);
+    }
+}
+
 function drawTextToContext(context, dims, txt) {
     // Check enabled states (default headline to true for backwards compatibility)
     const headlineEnabled = txt.headlineEnabled !== false;
@@ -7686,6 +7723,7 @@ function drawTextToContext(context, dims, txt) {
             // For bottom: lastLineY is already the bottom of last line, just add gap
             currentY = lastLineY + gap;
         }
+        currentY += (txt.subheadlineSpacing || 0); // extra title→subtitle spacing
     }
 
     // Draw subheadline (always below headline visually)
@@ -8217,6 +8255,18 @@ function drawText() {
     const dims = getCanvasDimensions();
     const text = getTextSettings();
 
+    // Panorama with per-screen text: draw a separate block centered in each panel.
+    if (text.perScreenText && (dims.span || 1) > 1) {
+        const baseW = dims.baseWidth || (dims.width / (dims.span || 1));
+        for (let p = 0; p < dims.span; p++) {
+            ctx.save();
+            ctx.translate(p * baseW, 0);
+            drawTextToContext(ctx, { width: baseW, height: dims.height }, makePanelTxt(text, p));
+            ctx.restore();
+        }
+        return;
+    }
+
     // Check enabled states (default headline to true for backwards compatibility)
     const headlineEnabled = text.headlineEnabled !== false;
     const subheadlineEnabled = text.subheadlineEnabled || false;
@@ -8302,6 +8352,7 @@ function drawText() {
             // For bottom: lastLineY is already the bottom of last line, just add gap
             currentY = lastLineY + gap;
         }
+        currentY += (text.subheadlineSpacing || 0); // extra title→subtitle spacing
     }
 
     // Draw subheadline (always below headline visually)

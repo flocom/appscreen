@@ -713,3 +713,86 @@ if (document.readyState === 'loading') {
 } else {
     initAllExtras();
 }
+
+// ============================================================================
+// Title–subtitle spacing + per-screen panorama text
+// ============================================================================
+function renderPerScreenTextUI() {
+    const tab = document.getElementById('tab-text');
+    if (!tab) return;
+    let box = document.getElementById('per-screen-text-box');
+    if (!box) { box = document.createElement('div'); box.id = 'per-screen-text-box'; tab.appendChild(box); }
+
+    const ss = state.screenshots[state.selectedIndex];
+    const span = (ss && ss.screenshot && ss.screenshot.spanScreens) || 1;
+    if (!ss || span <= 1) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    box.style.display = 'block';
+
+    const txt = ss.text;
+    const lang = txt.currentHeadlineLang || state.currentLanguage || 'en';
+    const on = !!txt.perScreenText;
+    box.innerHTML =
+        '<div class="divider"></div>' +
+        '<div class="control-group"><div class="toggle-row">' +
+        '<span class="toggle-label">Text per screen (' + span + ' panels)</span>' +
+        '<div class="toggle' + (on ? ' active' : '') + '" id="per-screen-text-toggle"></div>' +
+        '</div></div>' +
+        '<div id="per-screen-text-fields" style="display:' + (on ? 'block' : 'none') + '"></div>';
+
+    box.querySelector('#per-screen-text-toggle').addEventListener('click', function () {
+        this.classList.toggle('active');
+        txt.perScreenText = this.classList.contains('active');
+        renderPerScreenTextUI();
+        updateCanvas();
+    });
+
+    if (on) {
+        txt.panelHeadlines = txt.panelHeadlines || {};
+        txt.panelSubheadlines = txt.panelSubheadlines || {};
+        txt.panelHeadlines[lang] = txt.panelHeadlines[lang] || [];
+        txt.panelSubheadlines[lang] = txt.panelSubheadlines[lang] || [];
+        const fields = box.querySelector('#per-screen-text-fields');
+        let html = '';
+        for (let p = 0; p < span; p++) {
+            html += '<div class="control-group ps-group"><label class="control-label">Screen ' + (p + 1) + '</label>' +
+                '<textarea class="ps-text ps-headline" data-p="' + p + '" rows="1" placeholder="Headline">' + mcpEscapeHtml(txt.panelHeadlines[lang][p] || '') + '</textarea>' +
+                '<textarea class="ps-text ps-sub" data-p="' + p + '" rows="1" placeholder="Subheadline">' + mcpEscapeHtml(txt.panelSubheadlines[lang][p] || '') + '</textarea></div>';
+        }
+        fields.innerHTML = html;
+        fields.querySelectorAll('.ps-headline').forEach(t => t.addEventListener('input', () => { txt.panelHeadlines[lang][+t.dataset.p] = t.value; updateCanvas(); }));
+        fields.querySelectorAll('.ps-sub').forEach(t => t.addEventListener('input', () => { txt.panelSubheadlines[lang][+t.dataset.p] = t.value; updateCanvas(); }));
+    }
+}
+
+function initTextSpacingAndPerScreen() {
+    const sp = document.getElementById('subheadline-spacing');
+    const spv = document.getElementById('subheadline-spacing-value');
+    if (sp) sp.addEventListener('input', () => {
+        setTextSetting('subheadlineSpacing', parseInt(sp.value, 10));
+        if (spv) spv.textContent = sp.value + 'px';
+        updateCanvas();
+    });
+    document.querySelectorAll('#span-screens-selector button').forEach(b =>
+        b.addEventListener('click', () => setTimeout(renderPerScreenTextUI, 0)));
+    renderPerScreenTextUI();
+}
+
+function syncTextSpacingAndPerScreen() {
+    const txt = (typeof getTextSettings === 'function') ? getTextSettings() : null;
+    if (txt) {
+        const sp = document.getElementById('subheadline-spacing');
+        const spv = document.getElementById('subheadline-spacing-value');
+        if (sp) sp.value = txt.subheadlineSpacing || 0;
+        if (spv) spv.textContent = (txt.subheadlineSpacing || 0) + 'px';
+    }
+    renderPerScreenTextUI();
+}
+
+if (typeof syncUIWithState === 'function') {
+    const _origSyncUI2 = syncUIWithState;
+    // eslint-disable-next-line no-global-assign
+    syncUIWithState = function () { _origSyncUI2.apply(this, arguments); try { syncTextSpacingAndPerScreen(); } catch (e) {} };
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initTextSpacingAndPerScreen);
+else initTextSpacingAndPerScreen();
