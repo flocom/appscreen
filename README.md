@@ -209,6 +209,23 @@ Open **Settings** in the app: the **MCP Server** URL is auto-detected from the p
 (`http://<host>:3000/mcp`). Add an optional access token and click **Connect** to run the
 handshake and list the available tools.
 
+### Use it from claude.ai / Claude Desktop (public connector)
+
+The "Add custom connector" flow needs a **publicly reachable HTTPS** endpoint on port **443** —
+`localhost` or a `:3000` URL behind Cloudflare won't work. If your domain is on Cloudflare, the
+included **Cloudflare Tunnel** exposes the server over HTTPS with no open ports:
+
+```bash
+cd mcp-server
+TUNNEL_TOKEN=<your-cloudflare-tunnel-token> docker compose --profile tunnel up -d
+```
+
+Route the tunnel's public hostname to `http://appscreen-mcp:3000`, then use
+`https://your-host/mcp` (no port) as the connector URL. Details in
+[`mcp-server/README.md`](mcp-server/README.md#expose-publicly-claudeai--claude-desktop-custom-connectors).
+
+> For local use (Claude Code / `.mcp.json` / `claude mcp add`) none of this is needed.
+
 See [`mcp-server/README.md`](mcp-server/README.md) for the full parameter reference and all
 connection options (Claude Desktop, HTTP, Docker stdio, fonts, CORS).
 
