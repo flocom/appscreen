@@ -287,6 +287,21 @@ function hexToRgba(hex: string, alpha: number): string {
 
 function wrapText(ctx: SKRSContext2D, text: string, maxWidth: number): string[] {
   const lines: string[] = [];
+  // Break a token wider than maxWidth at the character level (long compound
+  // words, or scripts without spaces such as CJK).
+  const breakLongWord = (word: string, startLine: string): string => {
+    let currentLine = startLine;
+    for (const ch of word) {
+      const test = currentLine + ch;
+      if (ctx.measureText(test).width > maxWidth && currentLine) {
+        lines.push(currentLine);
+        currentLine = ch;
+      } else {
+        currentLine = test;
+      }
+    }
+    return currentLine;
+  };
   for (const rawLine of String(text).split(/\r?\n/)) {
     if (rawLine === "") {
       lines.push("");
@@ -294,6 +309,11 @@ function wrapText(ctx: SKRSContext2D, text: string, maxWidth: number): string[] 
     }
     let currentLine = "";
     for (const word of rawLine.split(" ")) {
+      if (ctx.measureText(word).width > maxWidth) {
+        if (currentLine) { lines.push(currentLine); currentLine = ""; }
+        currentLine = breakLongWord(word, "");
+        continue;
+      }
       const testLine = currentLine + (currentLine ? " " : "") + word;
       if (ctx.measureText(testLine).width > maxWidth && currentLine) {
         lines.push(currentLine);
