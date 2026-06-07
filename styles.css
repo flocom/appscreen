@@ -3938,3 +3938,20 @@ input[type="range"]::-webkit-slider-thumb {
     opacity: 0; transition: opacity 0.15s; pointer-events: none;
 }
 .alv-cell:hover .alv-hint, .alv-cell.empty .alv-hint { opacity: 1; }
+
+/* ===== Update button (next to Settings) ===== */
+.update-btn { position: relative; }
+.update-btn .update-dot {
+    display: none;
+    position: absolute;
+    top: 1px; right: 1px;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #ff453a;
+    box-shadow: 0 0 0 2px var(--bg-secondary);
+}
+.update-btn.available { color: var(--accent); animation: updatePulse 1.8s ease-in-out infinite; }
+.update-btn.available .update-dot { display: block; }
+.update-btn.checking svg { animation: updateSpin 0.8s linear infinite; }
+@keyframes updatePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes updateSpin { to { transform: rotate(360deg); } }
