@@ -285,6 +285,12 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
     version: "1.0.0",
   });
 
+  // Make the efficient large-image path discoverable from the tool description.
+  // Embeds this server's actual upload URL when known (HTTP transport).
+  const uploadHint = ctx.publicBaseUrl
+    ? ` IMAGE INPUTS: for a large image, do NOT inline base64. POST its raw bytes to ${ctx.publicBaseUrl}/upload (e.g. \`curl -X POST ${ctx.publicBaseUrl}/upload -H "Content-Type: image/png" --data-binary @shot.png\`), then pass the returned "appscreen-file://<id>" as the image field. A public http(s) URL also works (the server fetches it). Local file paths refer to the SERVER's disk, not yours.`
+    : ` IMAGE INPUTS: pass images as a data URL, raw base64, an http(s) URL, an "appscreen-file://<id>" ref (POST raw bytes to /upload first), or a server file path.`;
+
   server.registerTool(
     "list_output_sizes",
     {
@@ -323,7 +329,8 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       description:
         "Render a single marketing screenshot: background (gradient/preset/solid/image), " +
         "optional device screenshot with placement/shadow/border, and headline/subheadline text. " +
-        "Returns the PNG inline (base64) by default, or as a temporary download URL (deliver='url').",
+        "Returns the PNG inline (base64) by default, or as a temporary download URL (deliver='url')." +
+        uploadHint,
       inputSchema: renderShape,
     },
     async (args) => {
@@ -347,7 +354,8 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       description:
         "Render multiple screenshots in one call. Each item is a full screenshot spec " +
         "(supports outputPath, deliver, ttlSeconds). Returns a per-item summary plus any " +
-        "inline images / download URLs.",
+        "inline images / download URLs." +
+        uploadHint,
       inputSchema: {
         screenshots: z
           .array(z.object(renderShape))
