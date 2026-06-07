@@ -181,6 +181,22 @@ Lock down browser CORS in production with `MCP_CORS_ORIGIN` (e.g. `https://claud
 Defaults mirror appscreen (`scale 70`, `y 60`, `cornerRadius 24`, headline `100/600`,
 subheadline `50/400` at 70% opacity, drop shadow on).
 
+### Images: sending in & getting back
+
+**Send images in** — any field that takes an image (`screenshot.image`, `background.image`,
+`elements[].image`) accepts three forms:
+
+| Form | Example | Notes |
+|------|---------|-------|
+| **Data URL** | `data:image/png;base64,iVBORw0KGgo…` | Most reliable for inline images / AI agents. |
+| **Raw base64** | `iVBORw0KGgo…` / `/9j/…` | PNG, JPEG, GIF, WebP, BMP auto-detected by signature. |
+| **File path** | `/work/shot.png` | Must exist on the **server's** filesystem (in Docker, mount it, e.g. `-v ./work:/work`). |
+
+**Get the rendered image back** — `generate_screenshot` returns the PNG as an MCP `image`
+content block (base64), so the calling agent receives the picture directly. If you also pass
+`outputPath`, it's written to that path on the server and the path is reported. `generate_batch`
+returns one image block per item (or writes each item's `outputPath`).
+
 ### Full parameter coverage
 
 The server supports **every** parameter of appscreen's 2D pipeline, in the app's exact

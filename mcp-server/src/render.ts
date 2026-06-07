@@ -174,13 +174,20 @@ if (process.env.APPSCREEN_FONT_PATH) {
 
 // ----- Image loading -----
 
+// Accepts an image as: a data URL, raw base64, or a file path (on the server).
 async function loadImageInput(input: string): Promise<Image> {
+  // 1) data URL — data:image/png;base64,xxxx
   if (input.startsWith("data:")) {
     return loadImage(Buffer.from(input.slice(input.indexOf(",") + 1), "base64"));
   }
-  if (!input.includes("/") && !input.includes(".") && input.length > 256) {
-    return loadImage(Buffer.from(input, "base64"));
+  // 2) Raw base64. Base64 contains '/' and '+', so we can't rule it out by '/'.
+  //    Detect by the magic prefix every common image format encodes to:
+  //    PNG=iVBORw0KGgo, JPEG=/9j/, GIF=R0lGOD, WebP=UklGR, BMP=Qk, AVIF/HEIC=AAAA.
+  const compact = input.replace(/\s+/g, "");
+  if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR|Qk[01]|AAAA)/.test(compact)) {
+    return loadImage(Buffer.from(compact, "base64"));
   }
+  // 3) Otherwise treat as a filesystem path (must exist on the server).
   return loadImage(await readFile(input));
 }
 
