@@ -591,6 +591,14 @@ function initDeviceTextExtras() {
             const defNotch = model === 'ipad' ? 'none' : model === 'samsung' ? 'punch' : 'island';
             setScreenshotSetting('frame.notch', defNotch);
             document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === defNotch));
+            // Switch the output canvas to this device class's dimensions, unless the
+            // current size already matches (don't clobber a deliberate sub-size).
+            const classPrefix = model === 'ipad' ? 'ipad' : model === 'samsung' ? 'android' : 'iphone';
+            const defaultSize = model === 'ipad' ? 'ipad-13' : model === 'samsung' ? 'android-phone-hd' : 'iphone-6.9';
+            if (typeof state !== 'undefined' && !(state.outputDevice || '').startsWith(classPrefix)) {
+                state.outputDevice = defaultSize;
+                if (typeof syncUIWithState === 'function') syncUIWithState();
+            }
             updateCanvas();
         });
     });
