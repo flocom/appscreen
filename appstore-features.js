@@ -614,11 +614,21 @@ function initDeviceTextExtras() {
         const color = document.getElementById(colorId);
         const opacity = document.getElementById(opacityId);
         const val = document.getElementById(valueId);
-        if (color) color.addEventListener('input', () => { setTextSetting(colorKey, color.value); updateCanvas(); });
-        if (opacity) opacity.addEventListener('input', () => {
-            const v = parseInt(opacity.value, 10);
+        const setOpacity = (v) => {
             setTextSetting(opacityKey, v);
+            if (opacity) opacity.value = v;
             if (val) val.textContent = v === 0 ? 'Off' : v + '%';
+        };
+        if (color) color.addEventListener('input', () => {
+            setTextSetting(colorKey, color.value);
+            // Picking a color while the background is Off is confusing — turn it on
+            // so the choice is visible immediately.
+            const txt = (typeof getTextSettings === 'function') ? getTextSettings() : null;
+            if (txt && !(txt[opacityKey] > 0)) setOpacity(100);
+            updateCanvas();
+        });
+        if (opacity) opacity.addEventListener('input', () => {
+            setOpacity(parseInt(opacity.value, 10));
             updateCanvas();
         });
     };
