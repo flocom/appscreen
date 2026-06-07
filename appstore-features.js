@@ -570,8 +570,8 @@ function initCanvasViewToggle() {
 // ============================================================================
 // Device notch (2D "Device Model") + text background controls
 // ============================================================================
-// iPhone vs Samsung corner-radius defaults (slider value; render scales it).
-const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34 };
+// Per-model corner-radius defaults (slider value; render scales it).
+const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34, ipad: 28 };
 
 function initDeviceTextExtras() {
     // 2D Device Model (iPhone / Samsung) — auto-adapts corner radius + notch.
@@ -587,8 +587,8 @@ function initDeviceTextExtras() {
             const val = document.getElementById('corner-radius-value');
             if (slider) slider.value = r;
             if (val) val.textContent = r + 'px';
-            // Sensible default notch for the model
-            const defNotch = model === 'samsung' ? 'punch' : 'island';
+            // Sensible default notch for the model (iPads have none).
+            const defNotch = model === 'ipad' ? 'none' : model === 'samsung' ? 'punch' : 'island';
             setScreenshotSetting('frame.notch', defNotch);
             document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === defNotch));
             updateCanvas();

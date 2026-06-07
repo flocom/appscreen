@@ -3830,9 +3830,70 @@ function setupEventListeners() {
         document.getElementById('delete-project-modal').classList.remove('visible');
     });
 
-    // Export the CURRENT project as a self-contained backup (images + every
-    // setting). The project record already embeds each screenshot's images as
-    // base64 (src / localizedImages), so a single JSON round-trips everything.
+    // Export the CURRENT project as a ZIP backup: a project.json manifest plus the
+    // images stored as separate files under images/ (re-importable). Storing
+    // images as files instead of inline base64 keeps the archive smaller and lets
+    // you inspect/reuse the originals.
+    const EXT_TO_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml', bmp: 'image/bmp' };
+
+    function dataUrlToBytes(dataUrl) {
+        const comma = dataUrl.indexOf(',');
+        const header = dataUrl.slice(5, comma); // e.g. "image/png;base64"
+        const mime = header.split(';')[0] || 'image/png';
+        const ext = (mime.split('/')[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+        const body = dataUrl.slice(comma + 1);
+        let bytes;
+        if (/;base64/i.test(header)) {
+            const bin = atob(body);
+            bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        } else {
+            bytes = new TextEncoder().encode(decodeURIComponent(body));
+        }
+        return { bytes, ext };
+    }
+
+    // Deep-walk, replacing every embedded data:image URL with a "zip:images/…"
+    // reference and storing the bytes in the archive (identical images dedupe).
+    function externalizeImages(obj, zip, ctx) {
+        const handle = (val, set) => {
+            if (typeof val === 'string' && val.startsWith('data:image/')) {
+                let ref = ctx.seen.get(val);
+                if (!ref) {
+                    const { bytes, ext } = dataUrlToBytes(val);
+                    const path = 'images/img_' + (ctx.n++) + '.' + ext;
+                    zip.file(path, bytes);
+                    ref = 'zip:' + path;
+                    ctx.seen.set(val, ref);
+                }
+                set(ref);
+            } else if (val && typeof val === 'object') {
+                externalizeImages(val, zip, ctx);
+            }
+        };
+        if (Array.isArray(obj)) obj.forEach((v, i) => handle(v, nv => { obj[i] = nv; }));
+        else for (const k of Object.keys(obj)) handle(obj[k], nv => { obj[k] = nv; });
+    }
+
+    // Inverse: replace every "zip:…" reference with a reconstructed data:image URL.
+    async function inlineImages(obj, zip) {
+        const handle = async (val, set) => {
+            if (typeof val === 'string' && val.startsWith('zip:')) {
+                const path = val.slice(4);
+                const f = zip.file(path);
+                if (f) {
+                    const ext = (path.split('.').pop() || 'png').toLowerCase();
+                    const b64 = await f.async('base64');
+                    set('data:' + (EXT_TO_MIME[ext] || 'image/png') + ';base64,' + b64);
+                }
+            } else if (val && typeof val === 'object') {
+                await inlineImages(val, zip);
+            }
+        };
+        if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) await handle(obj[i], nv => { obj[i] = nv; }); }
+        else { for (const k of Object.keys(obj)) await handle(obj[k], nv => { obj[k] = nv; }); }
+    }
+
     document.getElementById('export-project-btn').addEventListener('click', async () => {
         if (!db) return;
         try {
@@ -3845,21 +3906,25 @@ function setupEventListeners() {
             });
             if (!rec) { await showAppAlert('No project data to export.', 'error'); return; }
             const meta = projects.find(p => p.id === currentProjectId);
-            const backup = {
+            const name = meta ? meta.name : 'Project';
+
+            const zip = new JSZip();
+            const recClone = JSON.parse(JSON.stringify(rec));
+            externalizeImages(recClone, zip, { seen: new Map(), n: 0 });
+            const manifest = {
                 type: 'appscreen-project-backup',
-                version: 1,
+                version: 2, // v2 = ZIP with images stored as files
                 exportedAt: new Date().toISOString(),
-                name: meta ? meta.name : 'Project',
-                data: rec
+                name,
+                data: recClone
             };
-            // No pretty-printing: keeps the file small and avoids hitting string
-            // limits on large (100+ MB) image payloads.
-            const json = JSON.stringify(backup);
-            const blob = new Blob([json], { type: 'application/json' });
+            zip.file('project.json', JSON.stringify(manifest));
+            const blob = await zip.generateAsync({ type: 'blob' });
+
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            const safe = (meta ? meta.name : 'project').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'project';
-            a.download = `appscreen-${safe}-${new Date().toISOString().slice(0, 10)}.json`;
+            const safe = name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'project';
+            a.download = `appscreen-${safe}-${new Date().toISOString().slice(0, 10)}.zip`;
             a.click();
             setTimeout(() => URL.revokeObjectURL(a.href), 1000);
         } catch (e) {
@@ -3868,7 +3933,7 @@ function setupEventListeners() {
         }
     });
 
-    // Import project backup
+    // Import project backup (ZIP with images, or legacy JSON).
     const importInput = document.getElementById('import-project-input');
     document.getElementById('import-project-btn').addEventListener('click', () => {
         importInput.click();
@@ -3877,17 +3942,24 @@ function setupEventListeners() {
         const file = e.target.files[0];
         if (!file || !db) return;
         try {
-            const text = await file.text();
-            const parsed = JSON.parse(text);
+            let manifest;
+            const isZip = /\.zip$/i.test(file.name) || file.type === 'application/zip';
+            if (isZip) {
+                const zip = await JSZip.loadAsync(file);
+                const pj = zip.file('project.json');
+                if (!pj) throw new Error('project.json not found in the ZIP');
+                manifest = JSON.parse(await pj.async('string'));
+                if (manifest && manifest.data) await inlineImages(manifest.data, zip); // restore data URLs from files
+            } else {
+                manifest = JSON.parse(await file.text());
+            }
 
-            if (parsed && parsed.type === 'appscreen-project-backup' && parsed.data) {
-                // New per-project backup → import as a NEW project (never overwrites,
-                // and can be imported repeatedly / on another machine). Images and all
-                // settings are restored from the embedded project record.
+            if (manifest && manifest.type === 'appscreen-project-backup' && manifest.data) {
+                // Import as a NEW project (never overwrites; re-importable; portable).
                 const newId = 'project_' + Date.now();
-                const data = parsed.data;
+                const data = manifest.data;
                 data.id = newId;
-                let name = parsed.name || 'Imported Project';
+                let name = manifest.name || 'Imported Project';
                 if (projects.some(p => p.name === name)) name += ' (Imported)';
                 await new Promise((resolve, reject) => {
                     const tx = db.transaction(PROJECTS_STORE, 'readwrite');
@@ -3902,7 +3974,7 @@ function setupEventListeners() {
                 await showAppAlert(`Imported "${name}" with all screenshots, images and settings.`, 'success');
             } else {
                 // Legacy full-database dump (keyed by object-store name) → restore as-is.
-                const dump = parsed;
+                const dump = manifest;
                 for (const storeName of Object.keys(dump)) {
                     if (!db.objectStoreNames.contains(storeName)) continue;
                     const tx = db.transaction(storeName, 'readwrite');
@@ -7623,17 +7695,19 @@ function drawNotchShape(context, x, y, width, height, radius, style) {
 // Shared: draw a 2D device bezel/shell (iPhone or Samsung) around the screen.
 function drawDeviceBezel(context, x, y, width, height, radius, model) {
     const isSamsung = model === 'samsung';
-    const bw = width * (isSamsung ? 0.020 : 0.028);
+    const isIpad = model === 'ipad';
+    // iPad bezels are uniform and a touch thinner than iPhone; Samsung thinnest.
+    const bw = width * (isSamsung ? 0.020 : isIpad ? 0.024 : 0.028);
     context.save();
     // Main dark bezel ring
     context.lineWidth = bw;
-    context.strokeStyle = isSamsung ? '#0b0b0d' : '#1d1d1f';
+    context.strokeStyle = isSamsung ? '#0b0b0d' : isIpad ? '#161618' : '#1d1d1f';
     context.beginPath();
     context.roundRect(x - bw / 2, y - bw / 2, width + bw, height + bw, radius + bw / 2);
     context.stroke();
-    // Subtle metallic outer edge (more pronounced on iPhone)
-    context.lineWidth = Math.max(1, bw * 0.14);
-    context.strokeStyle = isSamsung ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.20)';
+    // Subtle metallic outer edge
+    context.lineWidth = Math.max(1, bw * (isIpad ? 0.16 : 0.14));
+    context.strokeStyle = isSamsung ? 'rgba(255,255,255,0.08)' : isIpad ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.20)';
     context.beginPath();
     context.roundRect(x - bw, y - bw, width + bw * 2, height + bw * 2, radius + bw);
     context.stroke();
