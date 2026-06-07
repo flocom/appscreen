@@ -9,14 +9,12 @@ LABEL description="Browser-based tool for creating App Store marketing screensho
 # Remove default nginx static assets
 RUN rm -rf /usr/share/nginx/html/*
 
-# Copy application files
-COPY index.html /usr/share/nginx/html/
-COPY app.js /usr/share/nginx/html/
-COPY styles.css /usr/share/nginx/html/
-COPY three-renderer.js /usr/share/nginx/html/
-COPY language-utils.js /usr/share/nginx/html/
-COPY magical-titles.js /usr/share/nginx/html/
-COPY llm.js /usr/share/nginx/html/
+# Copy application files. Globs so every root HTML/CSS/JS module is included
+# automatically — avoids shipping an image that 404s a newly-added script
+# (e.g. appstore-features.js, updater.js, color-input.js, panel-resize.js).
+COPY *.html /usr/share/nginx/html/
+COPY *.css /usr/share/nginx/html/
+COPY *.js /usr/share/nginx/html/
 
 # Copy assets
 COPY models/ /usr/share/nginx/html/models/

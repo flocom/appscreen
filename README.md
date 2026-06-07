@@ -129,17 +129,28 @@ If you have the "Live Server" extension installed in VS Code, right-click `index
 
 #### Option 4: Docker
 
-Run the pre-built Docker image from GitHub Container Registry:
+Run the pre-built Docker image from GitHub Container Registry (published by CI on
+every push to `main`):
 
 ```bash
 # Using Docker directly
-docker run -d -p 8080:80 ghcr.io/yuzu-hub/appscreen:latest
+docker run -d -p 8080:80 ghcr.io/flocom/appscreen:latest
 
 # Using Docker Compose
 docker compose up -d
 ```
 
 Then open `http://localhost:8080` in your browser.
+
+**Updating to the latest version:**
+
+```bash
+# Pull the latest CI-built image and restart
+docker compose pull && docker compose up -d
+
+# …or rebuild from the current local source
+docker compose up -d --build
+```
 
 #### Building locally
 
