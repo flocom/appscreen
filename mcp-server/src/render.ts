@@ -18,6 +18,7 @@ import { dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Gradient } from "./presets.js";
 import { OUTPUT_SIZES, getPresetGradient, parseGradient } from "./presets.js";
+import { getFile as getUploadedFile } from "./filestore.js";
 
 // ----- Spec types -----
 
@@ -174,20 +175,35 @@ if (process.env.APPSCREEN_FONT_PATH) {
 
 // ----- Image loading -----
 
-// Accepts an image as: a data URL, raw base64, or a file path (on the server).
+// Accepts an image as: a data URL, an http(s) URL, an uploaded-file ref
+// (appscreen-file://<id>, from POST /upload), raw base64, or a server file path.
+// The URL / upload-ref forms avoid embedding huge base64 in the MCP request.
 async function loadImageInput(input: string): Promise<Image> {
   // 1) data URL — data:image/png;base64,xxxx
   if (input.startsWith("data:")) {
     return loadImage(Buffer.from(input.slice(input.indexOf(",") + 1), "base64"));
   }
-  // 2) Raw base64. Base64 contains '/' and '+', so we can't rule it out by '/'.
+  // 2) Uploaded-file reference — resolved straight from the in-memory store (no HTTP).
+  if (input.startsWith("appscreen-file://")) {
+    const id = input.slice("appscreen-file://".length).replace(/\.[a-z0-9]+$/i, "");
+    const f = getUploadedFile(id);
+    if (!f) throw new Error(`appscreen-file not found or expired: ${id}`);
+    return loadImage(f.buf);
+  }
+  // 3) http(s) URL — the server fetches the image.
+  if (/^https?:\/\//i.test(input)) {
+    const res = await fetch(input);
+    if (!res.ok) throw new Error(`Failed to fetch image (HTTP ${res.status}): ${input}`);
+    return loadImage(Buffer.from(await res.arrayBuffer()));
+  }
+  // 4) Raw base64. Base64 contains '/' and '+', so we can't rule it out by '/'.
   //    Detect by the magic prefix every common image format encodes to:
   //    PNG=iVBORw0KGgo, JPEG=/9j/, GIF=R0lGOD, WebP=UklGR, BMP=Qk, AVIF/HEIC=AAAA.
   const compact = input.replace(/\s+/g, "");
   if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR|Qk[01]|AAAA)/.test(compact)) {
     return loadImage(Buffer.from(compact, "base64"));
   }
-  // 3) Otherwise treat as a filesystem path (must exist on the server).
+  // 5) Otherwise treat as a filesystem path (must exist on the server).
   return loadImage(await readFile(input));
 }
 
