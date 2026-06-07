@@ -930,7 +930,7 @@ function renderOverlapGuardUI() {
     box.innerHTML =
         '<div class="og-row">' +
         '  <div class="og-title">Auto-fit text <span class="og-sub">avoid image overlap</span></div>' +
-        '  <div class="toggle-switch' + (state.autoFitText ? ' active' : '') + '" id="autofit-toggle"></div>' +
+        '  <div class="toggle' + (state.autoFitText ? ' active' : '') + '" id="autofit-toggle"></div>' +
         '</div>' +
         '<div class="og-status" id="autofit-status"></div>';
 
