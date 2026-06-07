@@ -550,6 +550,15 @@
                     </div>
                 </div>
 
+                <div class="control-group" id="device-model-2d-group">
+                    <label class="control-label">Device Model</label>
+                    <div class="btn-group" id="notch-selector">
+                        <button class="active" data-notch="none">No Notch</button>
+                        <button data-notch="island">Dynamic Island</button>
+                        <button data-notch="notch">Notch</button>
+                    </div>
+                </div>
+
                 <div id="rotation-3d-options" style="display: none;">
                     <div class="control-group">
                         <label class="control-label">Device Model</label>
@@ -934,6 +943,15 @@
                 </div>
 
                 <div class="control-group">
+                    <label class="control-label">Text Background</label>
+                    <div class="control-row">
+                        <input type="color" id="headline-bg-color" value="#000000" title="Background color">
+                        <input type="range" id="headline-bg-opacity" min="0" max="100" value="0" title="Background opacity">
+                        <span class="range-value" id="headline-bg-opacity-value">Off</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
                     <div class="toggle-row">
                         <span class="toggle-label">Per-language layout</span>
                         <div class="toggle" id="per-language-layout-toggle"></div>
@@ -1059,6 +1077,15 @@
                     <div class="control-row">
                         <input type="range" id="subheadline-opacity" min="0" max="100" value="70">
                         <span class="range-value" id="subheadline-opacity-value">70%</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label class="control-label">Text Background</label>
+                    <div class="control-row">
+                        <input type="color" id="subheadline-bg-color" value="#000000" title="Background color">
+                        <input type="range" id="subheadline-bg-opacity" min="0" max="100" value="0" title="Background opacity">
+                        <span class="range-value" id="subheadline-bg-opacity-value">Off</span>
                     </div>
                 </div>
                 </div><!-- end subheadline-options -->

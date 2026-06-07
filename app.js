@@ -50,11 +50,16 @@ const state = {
                 enabled: false,
                 color: '#1d1d1f',
                 width: 12,
-                opacity: 100
+                opacity: 100,
+                notch: 'none' // 'none' | 'island' | 'notch'
             }
         },
         text: {
             headlineEnabled: true,
+            headlineBgColor: '#000000',
+            headlineBgOpacity: 0, // 0 = no text background
+            subheadlineBgColor: '#000000',
+            subheadlineBgOpacity: 0,
             headlines: { en: '' },
             headlineLanguages: ['en'],
             currentHeadlineLang: 'en',
@@ -1905,11 +1910,16 @@ function resetStateToDefaults() {
                 enabled: false,
                 color: '#1d1d1f',
                 width: 12,
-                opacity: 100
+                opacity: 100,
+                notch: 'none' // 'none' | 'island' | 'notch'
             }
         },
         text: {
             headlineEnabled: true,
+            headlineBgColor: '#000000',
+            headlineBgOpacity: 0, // 0 = no text background
+            subheadlineBgColor: '#000000',
+            subheadlineBgOpacity: 0,
             headlines: { en: '' },
             headlineLanguages: ['en'],
             currentHeadlineLang: 'en',
@@ -7489,6 +7499,17 @@ function drawScreenshotToContext(context, dims, img, settings) {
         drawDeviceFrameToContext(context, x, y, imgWidth, imgHeight, settings);
         context.restore();
     }
+
+    // Draw notch / Dynamic Island (independent of the border frame)
+    if (settings.frame && settings.frame.notch && settings.frame.notch !== 'none') {
+        context.save();
+        context.translate(centerX, centerY);
+        if (settings.rotation !== 0) context.rotate(settings.rotation * Math.PI / 180);
+        if (settings.perspective !== 0) context.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
+        context.translate(-centerX, -centerY);
+        drawNotchShape(context, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
+        context.restore();
+    }
 }
 
 function drawDeviceFrameToContext(context, x, y, width, height, settings) {
@@ -7504,6 +7525,45 @@ function drawDeviceFrameToContext(context, x, y, width, height, settings) {
     context.roundRect(x - frameWidth / 2, y - frameWidth / 2, width + frameWidth, height + frameWidth, radius);
     context.stroke();
     context.globalAlpha = 1;
+}
+
+// Shared: draw an iPhone notch / Dynamic Island at the top-center of the screen,
+// clipped to the screen's rounded rect. Used by both render paths.
+function drawNotchShape(context, x, y, width, height, radius, style) {
+    if (!style || style === 'none') return;
+    context.save();
+    context.beginPath();
+    context.roundRect(x, y, width, height, radius);
+    context.clip();
+    context.fillStyle = '#000000';
+    if (style === 'island') {
+        const w = width * 0.30, h = width * 0.085;
+        context.beginPath();
+        context.roundRect(x + width / 2 - w / 2, y + width * 0.035, w, h, h / 2);
+        context.fill();
+    } else if (style === 'notch') {
+        const w = width * 0.50, h = width * 0.072, r = h * 0.55;
+        context.beginPath();
+        context.roundRect(x + width / 2 - w / 2, y - 1, w, h, [0, 0, r, r]);
+        context.fill();
+    }
+    context.restore();
+}
+
+// Shared: draw a rounded highlight box behind a single line of text.
+// baselineTop = true when the context baseline is 'top', false when 'bottom'.
+function drawTextHighlight(context, cx, y, textWidth, fontSize, baselineTop, color, alpha) {
+    if (!alpha || alpha <= 0 || textWidth <= 0) return;
+    const hpad = fontSize * 0.34, vpad = fontSize * 0.16, r = fontSize * 0.24;
+    const top = baselineTop ? y - vpad : y - fontSize - vpad;
+    const h = fontSize + vpad * 2;
+    context.save();
+    context.globalAlpha = alpha;
+    context.fillStyle = color;
+    context.beginPath();
+    context.roundRect(cx - textWidth / 2 - hpad, top, textWidth + hpad * 2, h, r);
+    context.fill();
+    context.restore();
 }
 
 function drawTextToContext(context, dims, txt) {
@@ -7548,9 +7608,13 @@ function drawTextToContext(context, dims, txt) {
         }
 
         let lastLineY;
+        const hlBaselineTop = layoutSettings.position === 'top';
         lines.forEach((line, i) => {
             const y = currentY + i * lineHeight;
             lastLineY = y;
+            if (txt.headlineBgOpacity > 0) {
+                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, headlineLayout.headlineSize, hlBaselineTop, txt.headlineBgColor || '#000000', txt.headlineBgOpacity / 100);
+            }
             context.fillText(line, dims.width / 2, y);
 
             // Calculate text metrics for decorations
@@ -7608,6 +7672,10 @@ function drawTextToContext(context, dims, txt) {
 
         lines.forEach((line, i) => {
             const y = subY + i * subLineHeight;
+            if (txt.subheadlineBgOpacity > 0) {
+                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, subheadlineLayout.subheadlineSize, true, txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity / 100);
+                context.fillStyle = hexToRgba(txt.subheadlineColor, txt.subheadlineOpacity / 100);
+            }
             context.fillText(line, dims.width / 2, y);
 
             // Calculate text metrics for decorations
@@ -8079,6 +8147,17 @@ function drawScreenshot() {
         drawDeviceFrame(x, y, imgWidth, imgHeight);
         ctx.restore();
     }
+
+    // Draw notch / Dynamic Island (independent of the border frame)
+    if (settings.frame.notch && settings.frame.notch !== 'none') {
+        ctx.save();
+        ctx.translate(centerX, centerY);
+        if (settings.rotation !== 0) ctx.rotate(settings.rotation * Math.PI / 180);
+        if (settings.perspective !== 0) ctx.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
+        ctx.translate(-centerX, -centerY);
+        drawNotchShape(ctx, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
+        ctx.restore();
+    }
 }
 
 function drawDeviceFrame(x, y, width, height) {
@@ -8142,9 +8221,13 @@ function drawText() {
         }
 
         let lastLineY;
+        const hlBaselineTop = layoutSettings.position === 'top';
         lines.forEach((line, i) => {
             const y = currentY + i * lineHeight;
             lastLineY = y;
+            if (text.headlineBgOpacity > 0) {
+                drawTextHighlight(ctx, dims.width / 2, y, ctx.measureText(line).width, headlineLayout.headlineSize, hlBaselineTop, text.headlineBgColor || '#000000', text.headlineBgOpacity / 100);
+            }
             ctx.fillText(line, dims.width / 2, y);
 
             // Calculate text metrics for decorations
@@ -8203,6 +8286,10 @@ function drawText() {
 
         lines.forEach((line, i) => {
             const y = subY + i * subLineHeight;
+            if (text.subheadlineBgOpacity > 0) {
+                drawTextHighlight(ctx, dims.width / 2, y, ctx.measureText(line).width, subheadlineLayout.subheadlineSize, true, text.subheadlineBgColor || '#000000', text.subheadlineBgOpacity / 100);
+                ctx.fillStyle = hexToRgba(text.subheadlineColor, text.subheadlineOpacity / 100);
+            }
             ctx.fillText(line, dims.width / 2, y);
 
             // Calculate text metrics for decorations
