@@ -700,11 +700,26 @@ function initDeleteShortcut() {
     });
 }
 
+// "Sync design to all" — apply the current screenshot's background/device/text
+// style to every other screenshot (reuses the existing apply-style flow + modal).
+function initSyncDesignButton() {
+    const btn = document.getElementById('sync-design-all-btn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        if (state.screenshots.length < 2) {
+            if (typeof showAppAlert === 'function') showAppAlert('Add another screenshot first.', 'info');
+            return;
+        }
+        if (typeof showApplyStyleModal === 'function') showApplyStyleModal(state.selectedIndex);
+    });
+}
+
 function initAllExtras() {
     initAppStoreFeatures();
     initCanvasViewToggle();
     initDeviceTextExtras();
     initDeleteShortcut();
+    initSyncDesignButton();
     try { syncDeviceTextExtras(); } catch (e) {}
 }
 
