@@ -129,10 +129,75 @@ html.tauri-app .right-sidebar {
 
 .app-container {
     display: grid;
-    grid-template-columns: 320px 1fr 340px;
+    grid-template-columns: var(--left-w, 320px) 1fr var(--right-w, 340px);
     min-height: 100vh;
     max-height: 100vh;
+    position: relative;
 }
+
+/* Resizable / collapsible panels */
+.app-container.left-collapsed > .sidebar:not(.sidebar-right) { overflow: hidden; border-right: none; }
+.app-container.right-collapsed > .sidebar-right { overflow: hidden; }
+
+.panel-resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 9px;
+    transform: translateX(-50%);
+    cursor: col-resize;
+    z-index: 30;
+}
+.panel-resize-handle.left { left: var(--left-w, 320px); }
+.panel-resize-handle.right { right: var(--right-w, 340px); }
+.panel-resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 0; bottom: 0; left: 50%;
+    width: 2px; transform: translateX(-50%);
+    background: transparent;
+    transition: background 0.15s;
+}
+.panel-resize-handle:hover::after,
+.panel-resize-handle.dragging::after { background: var(--accent); }
+.app-container.left-collapsed .panel-resize-handle.left,
+.app-container.right-collapsed .panel-resize-handle.right { display: none; }
+body.panel-resizing { cursor: col-resize; }
+body.panel-resizing * { user-select: none !important; }
+
+.panel-collapse-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.panel-collapse-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+.panel-reopen {
+    position: absolute;
+    top: 14px;
+    z-index: 40;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 40px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.panel-reopen:hover { color: var(--accent); border-color: var(--accent); }
+.panel-reopen.left { left: 0; border-left: none; border-radius: 0 8px 8px 0; }
+.panel-reopen.right { right: 0; border-right: none; border-radius: 8px 0 0 8px; }
+.app-container.left-collapsed .panel-reopen.left { display: inline-flex; }
+.app-container.right-collapsed .panel-reopen.right { display: inline-flex; }
 
 /* Sidebar styles */
 .sidebar {
