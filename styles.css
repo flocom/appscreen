@@ -4073,3 +4073,13 @@ input[id$="-hex"].color-invalid { border-color: #ff453a; }
 .alv-overlap-badge.fixed {
     background: rgba(69, 196, 99, 0.92);
 }
+
+/* Label row with an inline toggle (e.g. Text Background ON/OFF) */
+.control-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.control-label-row .control-label { margin: 0; }

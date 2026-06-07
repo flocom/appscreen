@@ -624,22 +624,37 @@ function initDeviceTextExtras() {
         });
     });
 
-    // Text background (color + opacity) for headline & subheadline
-    const bindBg = (colorId, opacityId, valueId, colorKey, opacityKey) => {
+    // Text background: ON/OFF toggle + color + opacity, for headline & subheadline.
+    const bindBg = (toggleId, colorId, opacityId, valueId, opacityKey) => {
+        const toggle = document.getElementById(toggleId);
         const color = document.getElementById(colorId);
         const opacity = document.getElementById(opacityId);
         const val = document.getElementById(valueId);
+        const lastKey = opacityKey + '_last';
         const setOpacity = (v) => {
             setTextSetting(opacityKey, v);
             if (opacity) opacity.value = v;
             if (val) val.textContent = v === 0 ? 'Off' : v + '%';
+            if (toggle) toggle.classList.toggle('active', v > 0);
         };
+        if (toggle) toggle.addEventListener('click', () => {
+            const txt = (typeof getTextSettings === 'function') ? getTextSettings() : {};
+            const on = !((txt[opacityKey] || 0) > 0);
+            if (on) {
+                const last = txt[lastKey] || 100;
+                setOpacity(last);
+            } else {
+                setTextSetting(lastKey, txt[opacityKey] || 100);
+                setOpacity(0);
+            }
+            updateCanvas();
+        });
         if (color) color.addEventListener('input', () => {
+            const colorKey = colorId.replace('headline-bg-color', 'headlineBgColor').replace('subheadline-bg-color', 'subheadlineBgColor');
             setTextSetting(colorKey, color.value);
-            // Picking a color while the background is Off is confusing — turn it on
-            // so the choice is visible immediately.
+            // Picking a color while the background is Off turns it on so the choice shows.
             const txt = (typeof getTextSettings === 'function') ? getTextSettings() : null;
-            if (txt && !(txt[opacityKey] > 0)) setOpacity(100);
+            if (txt && !(txt[opacityKey] > 0)) setOpacity(txt[lastKey] || 100);
             updateCanvas();
         });
         if (opacity) opacity.addEventListener('input', () => {
@@ -647,8 +662,8 @@ function initDeviceTextExtras() {
             updateCanvas();
         });
     };
-    bindBg('headline-bg-color', 'headline-bg-opacity', 'headline-bg-opacity-value', 'headlineBgColor', 'headlineBgOpacity');
-    bindBg('subheadline-bg-color', 'subheadline-bg-opacity', 'subheadline-bg-opacity-value', 'subheadlineBgColor', 'subheadlineBgOpacity');
+    bindBg('headline-bg-toggle', 'headline-bg-color', 'headline-bg-opacity', 'headline-bg-opacity-value', 'headlineBgOpacity');
+    bindBg('subheadline-bg-toggle', 'subheadline-bg-color', 'subheadline-bg-opacity', 'subheadline-bg-opacity-value', 'subheadlineBgOpacity');
 }
 
 function syncDeviceTextExtras() {
@@ -675,14 +690,16 @@ function syncDeviceTextExtras() {
         if (bz) bz.style.display = ss.use3D ? 'none' : 'flex';
     }
     if (txt) {
-        const setCtl = (colorId, opacityId, valueId, color, opacity) => {
-            const c = document.getElementById(colorId), o = document.getElementById(opacityId), v = document.getElementById(valueId);
+        const setCtl = (toggleId, colorId, opacityId, valueId, color, opacity) => {
+            const t = document.getElementById(toggleId), c = document.getElementById(colorId), o = document.getElementById(opacityId), v = document.getElementById(valueId);
+            const op = opacity || 0;
             if (c && color) c.value = color;
-            if (o) o.value = opacity || 0;
-            if (v) v.textContent = (opacity || 0) === 0 ? 'Off' : opacity + '%';
+            if (o) o.value = op;
+            if (v) v.textContent = op === 0 ? 'Off' : op + '%';
+            if (t) t.classList.toggle('active', op > 0);
         };
-        setCtl('headline-bg-color', 'headline-bg-opacity', 'headline-bg-opacity-value', txt.headlineBgColor || '#000000', txt.headlineBgOpacity || 0);
-        setCtl('subheadline-bg-color', 'subheadline-bg-opacity', 'subheadline-bg-opacity-value', txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity || 0);
+        setCtl('headline-bg-toggle', 'headline-bg-color', 'headline-bg-opacity', 'headline-bg-opacity-value', txt.headlineBgColor || '#000000', txt.headlineBgOpacity || 0);
+        setCtl('subheadline-bg-toggle', 'subheadline-bg-color', 'subheadline-bg-opacity', 'subheadline-bg-opacity-value', txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity || 0);
     }
 }
 
