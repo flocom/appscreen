@@ -1488,7 +1488,23 @@ function initSync() {
 }
 
 // Save state to IndexedDB for current project
+// Debounced persistence: writing the full project (which can be 100+ MB of
+// localized image data) to IndexedDB on every render makes editing janky.
+// scheduleSaveState() coalesces writes; saveState() still forces an immediate,
+// reliable write (used on structural changes and flushed before unload).
+let _saveStateTimer = null;
+function scheduleSaveState() {
+    if (_saveStateTimer) clearTimeout(_saveStateTimer);
+    _saveStateTimer = setTimeout(() => { _saveStateTimer = null; saveState(); }, 700);
+}
+if (typeof window !== 'undefined') {
+    const flush = () => { if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; saveState(); } };
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+}
+
 function saveState() {
+    if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
     if (!db) return;
 
     // Convert screenshots to base64 for storage, including per-screenshot settings and localized images
@@ -7005,7 +7021,7 @@ function getCanvasDimensions() {
 }
 
 function updateCanvas() {
-    saveState(); // Persist state on every update
+    scheduleSaveState(); // Persist state (debounced — see scheduleSaveState)
     const dims = getCanvasDimensions();
     canvas.width = dims.width;
     canvas.height = dims.height;
