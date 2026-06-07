@@ -60,6 +60,11 @@ A free, open-source tool for creating beautiful App Store screenshots with custo
 - **Collapsible Sections**: Clean UI with expandable settings panels
 - **Tab Persistence**: Remembers your active tab between sessions
 
+### Automation (MCP)
+- **AI Agent Generation**: An [MCP server](#mcp-server-generate-screenshots-with-ai-agents) lets Claude render screenshots headlessly — single shots or batches
+- **In-App Connection**: Connect to an MCP server from Settings; the URL is auto-detected from the page
+- **Runs Anywhere**: stdio for local use, HTTP for networked/Docker deployments
+
 ## Getting Started
 
 ### Just Want to Use It?
@@ -166,6 +171,47 @@ To use the AI-powered translation feature:
 
 Your API key is stored locally in your browser and only sent to the respective AI provider's API.
 
+## MCP Server (generate screenshots with AI agents)
+
+This repo ships an [**MCP**](https://modelcontextprotocol.io) server in [`mcp-server/`](mcp-server/)
+that renders App Store / Play Store / web screenshots **headlessly** (no browser) — a Node port of
+the same 2D pipeline (`app.js`) using [`@napi-rs/canvas`](https://github.com/Brooooooklyn/canvas).
+It lets an AI agent like **Claude** generate marketing screenshots for you, on demand or in batches.
+
+- **Tools:** `list_output_sizes`, `list_gradient_presets`, `generate_screenshot`, `generate_batch`
+- **Full parameter coverage:** gradient/solid/image backgrounds + noise, device placement
+  (scale/position/rotation/shadow/border), headline + subheadline, free-floating
+  elements (text/emoji/icon/graphic with laurel/badge/star frames), cropped "popout" callouts,
+  multi-language text, and an `avoidTextOverlap` layout safeguard.
+- **Returns the rendered PNG** in the tool result (and can write it to a path).
+- **Transports:** stdio (local) and Streamable HTTP (remote/networked).
+
+### Connect Claude in one command
+
+```bash
+cd mcp-server && ./setup.sh          # builds, then registers the server with Claude Code
+# or, over Docker / HTTP:
+cd mcp-server && ./setup.sh docker
+```
+
+The repo also ships a project-scoped [`.mcp.json`](.mcp.json), so opening it in Claude Code
+auto-discovers the **appscreen** server (after a one-time `cd mcp-server && npm install`).
+
+### Run it in Docker
+
+```bash
+cd mcp-server && docker compose up -d        # HTTP server on http://localhost:3000/mcp
+```
+
+### Connect from the web app (Settings → MCP Server)
+
+Open **Settings** in the app: the **MCP Server** URL is auto-detected from the page
+(`http://<host>:3000/mcp`). Add an optional access token and click **Connect** to run the
+handshake and list the available tools.
+
+See [`mcp-server/README.md`](mcp-server/README.md) for the full parameter reference and all
+connection options (Claude Desktop, HTTP, Docker stdio, fonts, CORS).
+
 ## Tech Stack
 
 - Vanilla JavaScript (no frameworks)
@@ -176,6 +222,7 @@ Your API key is stored locally in your browser and only sent to the respective A
 - Google Fonts API for font picker
 - Claude/OpenAI/Google APIs for translations
 - Docker + nginx for containerized deployment
+- MCP server (Node + @napi-rs/canvas) for headless, AI-agent screenshot generation
 
 ## Apps Using This Project
 

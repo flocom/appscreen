@@ -6,26 +6,108 @@ marketing screenshots, server-side. It's a Node port of the 2D rendering pipelin
 same background / device-placement / text-overlay math — rendered headlessly with
 [`@napi-rs/canvas`](https://github.com/Brooooooklyn/canvas) (no browser, no Puppeteer).
 
-## Install & build
+## Connect to Claude (pick one)
+
+### ① One command (Claude Code, local)
+
+```bash
+cd mcp-server && ./setup.sh
+```
+
+Installs deps, builds, and runs `claude mcp add appscreen …` for you. Then `claude mcp list`
+should show **appscreen ✓**. Ask Claude: *"Generate a 6.9-inch App Store screenshot with the
+Synthwave Dusk gradient and the headline 'Plan your adventures'."*
+
+### ② Zero-config (open the repo in Claude Code)
+
+This repo ships a project-scoped [`.mcp.json`](../.mcp.json). After a one-time
+`cd mcp-server && npm install` (which builds `dist/`), Claude Code auto-discovers the
+**appscreen** server whenever you open the project — nothing else to configure.
+
+### ③ Docker / HTTP (one command)
+
+```bash
+cd mcp-server && ./setup.sh docker     # builds the image, starts it, registers the HTTP server
+```
+
+…or manually:
+
+```bash
+docker compose up -d                                            # http://localhost:3000/mcp
+claude mcp add --transport http appscreen http://localhost:3000/mcp
+```
+
+### From the appscreen web app (Settings → MCP Server)
+
+The web app can connect to this server directly: open **Settings**, fill in the **Server URL**
+(e.g. `http://localhost:3000/mcp`) and an optional **access token**, and click **Connect**. It runs
+the MCP handshake, shows a live status dot, and lists the available tools. The URL/token are stored
+in your browser.
+
+This needs the **HTTP** transport, which already sends permissive CORS headers. Lock the allowed
+origin down in production with `MCP_CORS_ORIGIN` (e.g. `MCP_CORS_ORIGIN=https://yourapp.example`).
+Note browser mixed-content rules: an `https://` page can only call an `http://` server on
+`localhost` — for a remote server, serve it over HTTPS.
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json` (Settings → Developer → Edit Config):
+
+```jsonc
+{
+  "mcpServers": {
+    "appscreen": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/appscreen/mcp-server/dist/server.js"]
+    }
+  }
+}
+```
+
+Prefer Docker? Use a stdio-over-container command instead:
+
+```jsonc
+{
+  "mcpServers": {
+    "appscreen": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT=stdio",
+               "-v", "/host/folder:/work", "appscreen-mcp", "node", "dist/server.js"]
+    }
+  }
+}
+```
+
+> When the server writes files (`outputPath`) or reads image inputs by path, those paths are
+> on the **server's** filesystem. With Docker, mount a host folder (`-v host:/work`) and use
+> `/work/...` paths.
+
+## Install, build & run manually
 
 ```bash
 cd mcp-server
 npm install      # also builds via the prepare script
 npm run build    # or rebuild manually
-```
 
-## Run
-
-```bash
-# stdio (default) — for Claude Desktop / Claude Code
-npm start
-
-# Streamable HTTP — for remote/networked clients
-npm run start:http            # listens on http://localhost:3000/mcp
+npm start                       # stdio (default) — Claude Desktop / Claude Code
+npm run start:http              # Streamable HTTP on http://localhost:3000/mcp
 PORT=8787 node dist/server.js --http
 ```
 
 The transport is chosen by `--http` (or `MCP_TRANSPORT=http`); otherwise stdio.
+
+## Docker
+
+```bash
+docker compose up -d            # build + run the HTTP server, port 3000
+# or
+docker build -t appscreen-mcp .
+docker run -d -p 3000:3000 -v "$PWD/work:/work" appscreen-mcp
+curl http://localhost:3000/health        # {"ok":true}
+```
+
+The image bundles the fonts `@napi-rs/canvas` needs (DejaVu/Liberation sans + Noto color
+emoji) and the laurel SVG assets, so text and decorative frames render correctly headless.
 
 ## Tools
 

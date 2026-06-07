@@ -3527,3 +3527,55 @@ input[type="range"]::-webkit-slider-thumb {
     font-size: 18px;
     line-height: 1;
 }
+/* MCP server connection (Settings) */
+.mcp-status-dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #8a8a8e;
+    margin-left: 6px;
+    flex-shrink: 0;
+    transition: background 0.2s, box-shadow 0.2s;
+}
+.mcp-status-dot.connected {
+    background: #30d158;
+    box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.18);
+}
+.mcp-status-dot.connecting {
+    background: #ff9f0a;
+    box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.18);
+}
+.mcp-status-dot.error {
+    background: #ff453a;
+    box-shadow: 0 0 0 3px rgba(255, 69, 58, 0.18);
+}
+.settings-key-status.connecting {
+    color: #ff9f0a;
+}
+.mcp-tools-list {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.mcp-tools-list:empty {
+    display: none;
+}
+.mcp-tool-item {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+}
+.mcp-tool-item .mcp-tool-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.mcp-tool-item .mcp-tool-desc {
+    color: var(--text-secondary);
+    margin-top: 2px;
+    line-height: 1.35;
+}

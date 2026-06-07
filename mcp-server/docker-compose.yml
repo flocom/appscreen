@@ -1,0 +1,22 @@
+# Run the appscreen MCP server over HTTP:
+#   docker compose up -d
+# Then connect Claude Code:
+#   claude mcp add --transport http appscreen http://localhost:3000/mcp
+#
+# Mount a host folder at /work to let `outputPath` / image inputs use host files,
+# e.g. "outputPath": "/work/shot.png".
+services:
+  appscreen-mcp:
+    build: .
+    image: appscreen-mcp:latest
+    container_name: appscreen-mcp
+    ports:
+      - "3000:3000"
+    environment:
+      MCP_TRANSPORT: http
+      PORT: "3000"
+      # Default text font when a spec doesn't set one (must be installed in the image).
+      APPSCREEN_FONT_FAMILY: "DejaVu Sans"
+    volumes:
+      - ./work:/work
+    restart: unless-stopped

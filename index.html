@@ -1758,6 +1758,40 @@
                 </a>
             </div>
 
+            <div class="settings-section" id="settings-mcp">
+                <h4 class="settings-section-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                    </svg>
+                    MCP Server
+                    <span class="mcp-status-dot" id="mcp-status-dot" title="Not connected"></span>
+                </h4>
+                <p class="settings-description">Connect to an appscreen MCP server to render screenshots server-side. Enter the server URL and, if it requires one, an access token. Settings are stored locally in your browser.</p>
+
+                <label class="settings-model-label" for="settings-mcp-url">Server URL</label>
+                <div class="settings-input-group">
+                    <input type="text" id="settings-mcp-url" placeholder="http://localhost:3000/mcp" />
+                </div>
+
+                <label class="settings-model-label" for="settings-mcp-token" style="margin-top: 10px;">Access token <span style="opacity:.6">(optional — sent as Bearer)</span></label>
+                <div class="settings-input-group">
+                    <input type="password" id="settings-mcp-token" placeholder="Leave empty if not required" />
+                    <button class="settings-show-key" data-target="settings-mcp-token" title="Show/hide token">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                            <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+                    <button class="modal-btn modal-btn-confirm" id="mcp-connect-btn" style="background: var(--accent); flex: 0 0 auto;">Connect</button>
+                    <div class="settings-key-status" id="mcp-connection-status" style="margin:0;"></div>
+                </div>
+
+                <div class="mcp-tools-list" id="mcp-tools-list"></div>
+            </div>
+
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px;">
                 <span style="font-size: 13px; color: var(--text-secondary); flex-shrink: 0;">Appearance</span>
                 <div class="btn-group" id="theme-selector" style="flex: 0 0 200px;">

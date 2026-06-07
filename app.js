@@ -4054,6 +4054,19 @@ function setupEventListeners() {
         });
     });
 
+    // MCP server: connect button
+    const mcpConnectBtn = document.getElementById('mcp-connect-btn');
+    if (mcpConnectBtn) {
+        mcpConnectBtn.addEventListener('click', () => {
+            const url = document.getElementById('settings-mcp-url').value.trim();
+            const token = document.getElementById('settings-mcp-token').value.trim();
+            // Persist immediately so a successful connection survives reloads.
+            if (url) localStorage.setItem('mcpServerUrl', url); else localStorage.removeItem('mcpServerUrl');
+            if (token) localStorage.setItem('mcpServerToken', token); else localStorage.removeItem('mcpServerToken');
+            connectMcpServer(url, token);
+        });
+    }
+
     document.getElementById('settings-modal').addEventListener('click', (e) => {
         if (e.target.id === 'settings-modal') {
             document.getElementById('settings-modal').classList.remove('visible');
@@ -5833,6 +5846,24 @@ function openSettingsModal() {
         btn.classList.toggle('active', btn.dataset.theme === savedTheme);
     });
 
+    // Load saved MCP server config and reflect last known connection state
+    const mcpUrlInput = document.getElementById('settings-mcp-url');
+    const mcpTokenInput = document.getElementById('settings-mcp-token');
+    const savedMcpUrl = localStorage.getItem('mcpServerUrl');
+    if (mcpUrlInput) mcpUrlInput.value = savedMcpUrl || defaultMcpUrl();
+    if (mcpTokenInput) {
+        mcpTokenInput.value = localStorage.getItem('mcpServerToken') || '';
+        mcpTokenInput.type = 'password';
+    }
+    if (mcpState && mcpState.connected) {
+        setMcpStatus('connected', `Connected to ${mcpState.info} · ${mcpState.tools.length} tools`);
+        renderMcpTools(mcpState.tools);
+    } else {
+        setMcpStatus('', savedMcpUrl ? 'Saved — click Connect to test.' : 'Auto-detected from this page — click Connect.');
+        const toolsEl = document.getElementById('mcp-tools-list');
+        if (toolsEl) toolsEl.innerHTML = '';
+    }
+
     document.getElementById('settings-modal').classList.add('visible');
 }
 
@@ -5852,6 +5883,12 @@ function saveSettings() {
     // Save selected provider
     const selectedProvider = document.querySelector('input[name="ai-provider"]:checked').value;
     localStorage.setItem('aiProvider', selectedProvider);
+
+    // Save MCP server config
+    const mcpUrl = (document.getElementById('settings-mcp-url')?.value || '').trim();
+    const mcpToken = (document.getElementById('settings-mcp-token')?.value || '').trim();
+    if (mcpUrl) localStorage.setItem('mcpServerUrl', mcpUrl); else localStorage.removeItem('mcpServerUrl');
+    if (mcpToken) localStorage.setItem('mcpServerToken', mcpToken); else localStorage.removeItem('mcpServerToken');
 
     // Save all API keys and models
     let allValid = true;
@@ -5890,6 +5927,129 @@ function saveSettings() {
         setTimeout(() => {
             document.getElementById('settings-modal').classList.remove('visible');
         }, 500);
+    }
+}
+
+// ===== MCP server connection (browser MCP client over Streamable HTTP) =====
+
+// Last known connection state (runtime only).
+let mcpState = { connected: false, tools: [], url: '', info: '' };
+
+// Derive a sensible default MCP server URL from the page's own origin: same
+// protocol + host the app is served from, on the MCP server's default port 3000.
+// This makes localhost and LAN (e.g. http://192.168.x.x:8000) work out of the box.
+// Falls back to localhost for file:// or when the host can't be determined.
+function defaultMcpUrl() {
+    try {
+        const loc = window.location;
+        const host = loc.hostname;
+        if (host) {
+            const proto = loc.protocol === 'https:' ? 'https:' : 'http:';
+            return `${proto}//${host}:3000/mcp`;
+        }
+    } catch (e) { /* ignore */ }
+    return 'http://localhost:3000/mcp';
+}
+
+function mcpEscapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+}
+
+// Parse a JSON-RPC reply that may come back as plain JSON or as an SSE stream
+// (event: message\n data: {...}). Returns the parsed message object.
+function mcpParseResponse(text) {
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{')) return JSON.parse(trimmed);
+    let last = null;
+    for (const line of trimmed.split(/\r?\n/)) {
+        const m = line.match(/^data:\s?(.*)$/);
+        if (m && m[1]) {
+            try { last = JSON.parse(m[1]); } catch (e) { /* ignore non-JSON data lines */ }
+        }
+    }
+    if (!last) throw new Error('Could not parse server response.');
+    return last;
+}
+
+async function mcpRpc(url, token, method, params) {
+    const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream'
+    };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params: params || {} })
+    });
+    if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.text()).slice(0, 200); } catch (e) {}
+        throw new Error(`HTTP ${res.status}` + (detail ? ` — ${detail}` : ''));
+    }
+    const msg = mcpParseResponse(await res.text());
+    if (msg.error) throw new Error(msg.error.message || JSON.stringify(msg.error));
+    return msg.result;
+}
+
+function setMcpStatus(state, msg) {
+    const dot = document.getElementById('mcp-status-dot');
+    const status = document.getElementById('mcp-connection-status');
+    if (dot) {
+        dot.className = 'mcp-status-dot' + (state ? ' ' + state : '');
+        dot.title = msg || (state || 'Not connected');
+    }
+    if (status) {
+        status.textContent = msg || '';
+        const cls = state === 'connected' ? ' success'
+            : state === 'error' ? ' error'
+            : state === 'connecting' ? ' connecting' : '';
+        status.className = 'settings-key-status' + cls;
+    }
+}
+
+function renderMcpTools(tools) {
+    const el = document.getElementById('mcp-tools-list');
+    if (!el) return;
+    el.innerHTML = (tools || []).map(t => `
+        <div class="mcp-tool-item">
+            <div class="mcp-tool-name">${mcpEscapeHtml(t.name)}</div>
+            ${t.description ? `<div class="mcp-tool-desc">${mcpEscapeHtml(t.description)}</div>` : ''}
+        </div>`).join('');
+}
+
+// Initiate the MCP connection: handshake + list tools.
+async function connectMcpServer(url, token) {
+    const toolsEl = document.getElementById('mcp-tools-list');
+    if (!url) {
+        setMcpStatus('error', 'Enter a server URL first.');
+        return;
+    }
+    setMcpStatus('connecting', 'Connecting…');
+    if (toolsEl) toolsEl.innerHTML = '';
+    try {
+        const init = await mcpRpc(url, token, 'initialize', {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'appscreen-web', version: '1.0.0' }
+        });
+        const info = init && init.serverInfo
+            ? `${init.serverInfo.name} v${init.serverInfo.version}`
+            : 'server';
+        const list = await mcpRpc(url, token, 'tools/list', {});
+        const tools = (list && list.tools) || [];
+        mcpState = { connected: true, tools, url, info };
+        setMcpStatus('connected', `Connected to ${info} · ${tools.length} tools`);
+        renderMcpTools(tools);
+    } catch (e) {
+        mcpState = { connected: false, tools: [], url, info: '' };
+        let hint = String((e && e.message) || e);
+        if (/Failed to fetch|NetworkError|load failed/i.test(hint)) {
+            hint = 'Could not reach the server. Check the URL, that the server is running, and CORS / mixed content (an HTTPS page cannot call an http:// server except on localhost).';
+        }
+        setMcpStatus('error', hint);
     }
 }
 

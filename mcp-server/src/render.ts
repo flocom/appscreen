@@ -155,10 +155,12 @@ export interface RenderSpec {
 
 const DEFAULT_FONT = process.env.APPSCREEN_FONT_FAMILY || "sans-serif";
 
-// Directory holding appscreen's img/ assets (laurel SVGs). Override with env.
+// Directory holding the laurel SVGs. Prefer the vendored copy under mcp-server/assets
+// (self-contained, works in Docker); fall back to the repo's img/ folder. Override
+// with APPSCREEN_ASSETS_DIR.
 const ASSETS_DIR =
   process.env.APPSCREEN_ASSETS_DIR ||
-  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "img");
+  join(dirname(fileURLToPath(import.meta.url)), "..", "assets");
 
 if (process.env.APPSCREEN_FONT_PATH) {
   for (const p of process.env.APPSCREEN_FONT_PATH.split(":").filter(Boolean)) {
@@ -183,15 +185,22 @@ async function loadImageInput(input: string): Promise<Image> {
 }
 
 const laurelCache = new Map<string, Image | null>();
+const ASSET_FALLBACK_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "img");
 async function loadLaurel(variant: string): Promise<Image | null> {
   if (laurelCache.has(variant)) return laurelCache.get(variant)!;
   let img: Image | null = null;
-  try {
-    const p = isAbsolute(variant) ? variant : join(ASSETS_DIR, `${variant}.svg`);
-    img = await loadImage(await readFile(p));
-  } catch (e) {
-    console.error(`[appscreen-mcp] laurel asset missing (${variant}):`, e);
+  const candidates = isAbsolute(variant)
+    ? [variant]
+    : [join(ASSETS_DIR, `${variant}.svg`), join(ASSET_FALLBACK_DIR, `${variant}.svg`)];
+  for (const p of candidates) {
+    try {
+      img = await loadImage(await readFile(p));
+      break;
+    } catch {
+      /* try next candidate */
+    }
   }
+  if (!img) console.error(`[appscreen-mcp] laurel asset not found: ${variant} (looked in ${candidates.join(", ")})`);
   laurelCache.set(variant, img);
   return img;
 }
