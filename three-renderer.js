@@ -661,6 +661,16 @@ function updateScreenTexture() {
     const cornerRadius = Math.round(screenshotImage.width * config.cornerRadiusFactor);
     const roundedImage = createRoundedScreenImage(screenshotImage, cornerRadius);
 
+    // Bake the notch / Dynamic Island onto the 3D screen texture so it follows
+    // the model (the 2D notch options also apply in 3D).
+    const notch = screenshot.screenshot && screenshot.screenshot.frame && screenshot.screenshot.frame.notch;
+    if (notch && notch !== 'none' && typeof drawNotchShape === 'function') {
+        try {
+            const nctx = roundedImage.getContext('2d');
+            drawNotchShape(nctx, 0, 0, roundedImage.width, roundedImage.height, cornerRadius, notch);
+        } catch (e) { /* ignore */ }
+    }
+
     screenTexture = new THREE.Texture(roundedImage);
     screenTexture.needsUpdate = true;
     screenTexture.encoding = THREE.sRGBEncoding;

@@ -35,6 +35,8 @@ const state = {
             rotation: 0,
             perspective: 0,
             cornerRadius: 24,
+            deviceModel2D: 'iphone', // 2D device model: 'iphone' | 'samsung'
+            bezelEnabled: false,      // draw a device bezel/shell in 2D
             use3D: false,
             device3D: 'iphone',
             rotation3D: { x: 0, y: 0, z: 0 },
@@ -7500,14 +7502,16 @@ function drawScreenshotToContext(context, dims, img, settings) {
         context.restore();
     }
 
-    // Draw notch / Dynamic Island (independent of the border frame)
-    if (settings.frame && settings.frame.notch && settings.frame.notch !== 'none') {
+    // Draw 2D device bezel + notch / Dynamic Island (independent of the border)
+    const hasNotch = settings.frame && settings.frame.notch && settings.frame.notch !== 'none';
+    if (settings.bezelEnabled || hasNotch) {
         context.save();
         context.translate(centerX, centerY);
         if (settings.rotation !== 0) context.rotate(settings.rotation * Math.PI / 180);
         if (settings.perspective !== 0) context.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
         context.translate(-centerX, -centerY);
-        drawNotchShape(context, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
+        if (settings.bezelEnabled) drawDeviceBezel(context, x, y, imgWidth, imgHeight, radius, settings.deviceModel2D || 'iphone');
+        if (hasNotch) drawNotchShape(context, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
         context.restore();
     }
 }
@@ -7546,7 +7550,33 @@ function drawNotchShape(context, x, y, width, height, radius, style) {
         context.beginPath();
         context.roundRect(x + width / 2 - w / 2, y - 1, w, h, [0, 0, r, r]);
         context.fill();
+    } else if (style === 'punch') {
+        // Samsung-style centered punch-hole camera
+        const r = width * 0.018;
+        context.beginPath();
+        context.arc(x + width / 2, y + width * 0.04, r, 0, Math.PI * 2);
+        context.fill();
     }
+    context.restore();
+}
+
+// Shared: draw a 2D device bezel/shell (iPhone or Samsung) around the screen.
+function drawDeviceBezel(context, x, y, width, height, radius, model) {
+    const isSamsung = model === 'samsung';
+    const bw = width * (isSamsung ? 0.020 : 0.028);
+    context.save();
+    // Main dark bezel ring
+    context.lineWidth = bw;
+    context.strokeStyle = isSamsung ? '#0b0b0d' : '#1d1d1f';
+    context.beginPath();
+    context.roundRect(x - bw / 2, y - bw / 2, width + bw, height + bw, radius + bw / 2);
+    context.stroke();
+    // Subtle metallic outer edge (more pronounced on iPhone)
+    context.lineWidth = Math.max(1, bw * 0.14);
+    context.strokeStyle = isSamsung ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.20)';
+    context.beginPath();
+    context.roundRect(x - bw, y - bw, width + bw * 2, height + bw * 2, radius + bw);
+    context.stroke();
     context.restore();
 }
 
@@ -8148,14 +8178,16 @@ function drawScreenshot() {
         ctx.restore();
     }
 
-    // Draw notch / Dynamic Island (independent of the border frame)
-    if (settings.frame.notch && settings.frame.notch !== 'none') {
+    // Draw 2D device bezel + notch / Dynamic Island (independent of the border)
+    const hasNotch2 = settings.frame.notch && settings.frame.notch !== 'none';
+    if (settings.bezelEnabled || hasNotch2) {
         ctx.save();
         ctx.translate(centerX, centerY);
         if (settings.rotation !== 0) ctx.rotate(settings.rotation * Math.PI / 180);
         if (settings.perspective !== 0) ctx.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
         ctx.translate(-centerX, -centerY);
-        drawNotchShape(ctx, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
+        if (settings.bezelEnabled) drawDeviceBezel(ctx, x, y, imgWidth, imgHeight, radius, settings.deviceModel2D || 'iphone');
+        if (hasNotch2) drawNotchShape(ctx, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
         ctx.restore();
     }
 }
