@@ -7645,7 +7645,11 @@ function drawTextWithPanorama(context, dims, txt) {
 
 // Measure the vertical extent {top, bottom} of the text block without drawing,
 // replaying drawTextToContext's layout maths. Returns null if no text.
-function textVerticalExtent(context, dims, txt) {
+// Measures the vertical extent of the text block. `fontScale` shrinks the FONT
+// size only (used by auto-fit) — the wrap width stays full, so reducing it makes
+// the text reflow over the same width and just get shorter, never narrower.
+function textVerticalExtent(context, dims, txt, fontScale) {
+    fontScale = fontScale || 1;
     const headlineEnabled = txt.headlineEnabled !== false;
     const subheadlineEnabled = txt.subheadlineEnabled || false;
     const headlineLang = txt.currentHeadlineLang || 'en';
@@ -7656,32 +7660,34 @@ function textVerticalExtent(context, dims, txt) {
     const headline = headlineEnabled && txt.headlines ? (txt.headlines[headlineLang] || '') : '';
     const subheadline = subheadlineEnabled && txt.subheadlines ? (txt.subheadlines[subheadlineLang] || '') : '';
     if (!headline && !subheadline) return null;
+    const hSize = headlineLayout.headlineSize * fontScale;
+    const sSize = subheadlineLayout.subheadlineSize * fontScale;
     const padding = dims.width * 0.08;
     const isTop = layoutSettings.position === 'top';
     const textY = isTop ? dims.height * (layoutSettings.offsetY / 100) : dims.height * (1 - layoutSettings.offsetY / 100);
     let top = Infinity, bottom = -Infinity, currentY = textY;
     if (headline) {
-        context.font = `${txt.headlineItalic ? 'italic' : 'normal'} ${txt.headlineWeight} ${headlineLayout.headlineSize}px ${txt.headlineFont}`;
+        context.font = `${txt.headlineItalic ? 'italic' : 'normal'} ${txt.headlineWeight} ${hSize}px ${txt.headlineFont}`;
         const lines = wrapText(context, headline, dims.width - padding * 2);
-        const lineHeight = headlineLayout.headlineSize * (layoutSettings.lineHeight / 100);
+        const lineHeight = hSize * (layoutSettings.lineHeight / 100);
         if (!isTop) currentY -= (lines.length - 1) * lineHeight;
         lines.forEach((_, i) => {
             const y = currentY + i * lineHeight;
-            top = Math.min(top, isTop ? y : y - headlineLayout.headlineSize);
-            bottom = Math.max(bottom, isTop ? y + headlineLayout.headlineSize : y);
+            top = Math.min(top, isTop ? y : y - hSize);
+            bottom = Math.max(bottom, isTop ? y + hSize : y);
         });
         const lastLineY = currentY + (lines.length - 1) * lineHeight;
-        const gap = lineHeight - headlineLayout.headlineSize;
-        currentY = (isTop ? lastLineY + headlineLayout.headlineSize + gap : lastLineY + gap) + (txt.subheadlineSpacing || 0);
+        const gap = lineHeight - hSize;
+        currentY = (isTop ? lastLineY + hSize + gap : lastLineY + gap) + (txt.subheadlineSpacing || 0) * fontScale;
     }
     if (subheadline) {
-        context.font = `${txt.subheadlineItalic ? 'italic' : 'normal'} ${txt.subheadlineWeight || '400'} ${subheadlineLayout.subheadlineSize}px ${txt.subheadlineFont || txt.headlineFont}`;
+        context.font = `${txt.subheadlineItalic ? 'italic' : 'normal'} ${txt.subheadlineWeight || '400'} ${sSize}px ${txt.subheadlineFont || txt.headlineFont}`;
         const lines = wrapText(context, subheadline, dims.width - padding * 2);
-        const subLineHeight = subheadlineLayout.subheadlineSize * 1.4;
+        const subLineHeight = sSize * 1.4;
         lines.forEach((_, i) => {
             const y = currentY + i * subLineHeight;
             top = Math.min(top, y);
-            bottom = Math.max(bottom, y + subheadlineLayout.subheadlineSize);
+            bottom = Math.max(bottom, y + sSize);
         });
     }
     if (!isFinite(top) || !isFinite(bottom)) return null;
@@ -7692,16 +7698,27 @@ function textVerticalExtent(context, dims, txt) {
 // fit it (1 = fits). Uses the last drawn device rect (window.__imgRect).
 function computeTextFit(context, dims, txt) {
     const rect = (typeof window !== 'undefined') ? window.__imgRect : null;
-    if (!rect || !rect.has) return { scale: 1, overlaps: false };
-    const ext = textVerticalExtent(context, dims, txt);
-    if (!ext) return { scale: 1, overlaps: false };
+    if (!rect || !rect.has) return { scale: 1, fontScale: 1, overlaps: false };
+    const ext = textVerticalExtent(context, dims, txt, 1);
+    if (!ext) return { scale: 1, fontScale: 1, overlaps: false };
     const isTop = getEffectiveLayout(txt, getTextLayoutLanguage(txt)).position === 'top';
     const gap = dims.height * 0.02;
     const blockH = ext.bottom - ext.top;
+    // Space available between the text's fixed anchor edge and the device image.
     const avail = isTop ? (rect.y - gap) - ext.top : ext.bottom - (rect.y + rect.h + gap);
     const overlaps = blockH > 0 && blockH > avail;
-    const scale = overlaps ? Math.max(0.35, avail / blockH) : 1;
-    return { scale, overlaps, anchorY: isTop ? ext.top : ext.bottom, cx: dims.width / 2 };
+    if (!overlaps) return { scale: 1, fontScale: 1, overlaps: false };
+    // Find the largest font scale whose re-wrapped block fits the available height.
+    // (Smaller font reflows over the same full width, so the block only shrinks
+    // vertically — the width is preserved.)
+    let lo = 0.35, hi = 1, best = 0.35;
+    for (let i = 0; i < 8; i++) {
+        const mid = (lo + hi) / 2;
+        const e = textVerticalExtent(context, dims, txt, mid);
+        const h = e ? e.bottom - e.top : 0;
+        if (h <= avail) { best = mid; lo = mid; } else { hi = mid; }
+    }
+    return { scale: best, fontScale: best, overlaps: true };
 }
 
 function drawTextToContext(context, dims, txt) {
@@ -7721,19 +7738,15 @@ function drawTextToContext(context, dims, txt) {
 
     if (!headline && !subheadline) return;
 
-    // Auto-fit: shrink the text block (around its anchored edge) so it doesn't
-    // overlap the device image, when the feature is enabled.
-    let _autoFitApplied = false;
+    // Auto-fit: reduce the FONT SIZE (not the width) so the text reflows over the
+    // same full width and only gets shorter, avoiding overlap with the device.
+    let fontScale = 1;
     if (typeof state !== 'undefined' && state.autoFitText) {
         const fit = computeTextFit(context, dims, txt);
-        if (fit.overlaps && fit.scale < 0.999) {
-            context.save();
-            context.translate(fit.cx, fit.anchorY);
-            context.scale(fit.scale, fit.scale);
-            context.translate(-fit.cx, -fit.anchorY);
-            _autoFitApplied = true;
-        }
+        if (fit.overlaps && fit.fontScale < 0.999) fontScale = fit.fontScale;
     }
+    const hSize = headlineLayout.headlineSize * fontScale;
+    const sSize = subheadlineLayout.subheadlineSize * fontScale;
 
     const padding = dims.width * 0.08;
     const textY = layoutSettings.position === 'top'
@@ -7748,11 +7761,11 @@ function drawTextToContext(context, dims, txt) {
     // Draw headline
     if (headline) {
         const fontStyle = txt.headlineItalic ? 'italic' : 'normal';
-        context.font = `${fontStyle} ${txt.headlineWeight} ${headlineLayout.headlineSize}px ${txt.headlineFont}`;
+        context.font = `${fontStyle} ${txt.headlineWeight} ${hSize}px ${txt.headlineFont}`;
         context.fillStyle = txt.headlineColor;
 
         const lines = wrapText(context, headline, dims.width - padding * 2);
-        const lineHeight = headlineLayout.headlineSize * (layoutSettings.lineHeight / 100);
+        const lineHeight = hSize * (layoutSettings.lineHeight / 100);
 
         // For bottom positioning, offset currentY so lines draw correctly
         if (layoutSettings.position === 'bottom') {
@@ -7765,13 +7778,13 @@ function drawTextToContext(context, dims, txt) {
             const y = currentY + i * lineHeight;
             lastLineY = y;
             if (txt.headlineBgOpacity > 0) {
-                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, headlineLayout.headlineSize, hlBaselineTop, txt.headlineBgColor || '#000000', txt.headlineBgOpacity / 100);
+                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, hSize, hlBaselineTop, txt.headlineBgColor || '#000000', txt.headlineBgOpacity / 100);
             }
             context.fillText(line, dims.width / 2, y);
 
             // Calculate text metrics for decorations
             const textWidth = context.measureText(line).width;
-            const fontSize = headlineLayout.headlineSize;
+            const fontSize = hSize;
             const lineThickness = Math.max(2, fontSize * 0.05);
             const x = dims.width / 2 - textWidth / 2;
 
@@ -7795,26 +7808,26 @@ function drawTextToContext(context, dims, txt) {
         // Track where subheadline should start (below the bottom edge of headline)
         // The gap between headline and subheadline should be (lineHeight - fontSize)
         // This is the "extra" spacing beyond the text itself
-        const gap = lineHeight - headlineLayout.headlineSize;
+        const gap = lineHeight - hSize;
         if (layoutSettings.position === 'top') {
             // For top: lastLineY is top of last line, add fontSize to get bottom, then add gap
-            currentY = lastLineY + headlineLayout.headlineSize + gap;
+            currentY = lastLineY + hSize + gap;
         } else {
             // For bottom: lastLineY is already the bottom of last line, just add gap
             currentY = lastLineY + gap;
         }
-        currentY += (txt.subheadlineSpacing || 0); // extra title→subtitle spacing
+        currentY += (txt.subheadlineSpacing || 0) * fontScale; // extra title→subtitle spacing
     }
 
     // Draw subheadline (always below headline visually)
     if (subheadline) {
         const subFontStyle = txt.subheadlineItalic ? 'italic' : 'normal';
         const subWeight = txt.subheadlineWeight || '400';
-        context.font = `${subFontStyle} ${subWeight} ${subheadlineLayout.subheadlineSize}px ${txt.subheadlineFont || txt.headlineFont}`;
+        context.font = `${subFontStyle} ${subWeight} ${sSize}px ${txt.subheadlineFont || txt.headlineFont}`;
         context.fillStyle = hexToRgba(txt.subheadlineColor, txt.subheadlineOpacity / 100);
 
         const lines = wrapText(context, subheadline, dims.width - padding * 2);
-        const subLineHeight = subheadlineLayout.subheadlineSize * 1.4;
+        const subLineHeight = sSize * 1.4;
 
         // Subheadline starts after headline with gap determined by headline lineHeight
         // For bottom position, switch to 'top' baseline so subheadline draws downward
@@ -7826,14 +7839,14 @@ function drawTextToContext(context, dims, txt) {
         lines.forEach((line, i) => {
             const y = subY + i * subLineHeight;
             if (txt.subheadlineBgOpacity > 0) {
-                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, subheadlineLayout.subheadlineSize, true, txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity / 100);
+                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, sSize, true, txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity / 100);
                 context.fillStyle = hexToRgba(txt.subheadlineColor, txt.subheadlineOpacity / 100);
             }
             context.fillText(line, dims.width / 2, y);
 
             // Calculate text metrics for decorations
             const textWidth = context.measureText(line).width;
-            const fontSize = subheadlineLayout.subheadlineSize;
+            const fontSize = sSize;
             const lineThickness = Math.max(2, fontSize * 0.05);
             const x = dims.width / 2 - textWidth / 2;
 
@@ -7855,8 +7868,6 @@ function drawTextToContext(context, dims, txt) {
             context.textBaseline = 'bottom';
         }
     }
-
-    if (_autoFitApplied) context.restore();
 }
 
 // Draw elements for the current screenshot at a specific layer
