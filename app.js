@@ -8439,6 +8439,22 @@ function wrapText(ctx, text, maxWidth) {
     const lines = [];
     const rawLines = String(text).split(/\r?\n/);
 
+    // Break a single token that's wider than maxWidth at the character level
+    // (handles long compound words and scripts without spaces like CJK).
+    function breakLongWord(word, startLine) {
+        let currentLine = startLine;
+        for (const ch of word) {
+            const test = currentLine + ch;
+            if (ctx.measureText(test).width > maxWidth && currentLine) {
+                lines.push(currentLine);
+                currentLine = ch;
+            } else {
+                currentLine = test;
+            }
+        }
+        return currentLine;
+    }
+
     rawLines.forEach((rawLine) => {
         if (rawLine === '') {
             lines.push('');
@@ -8449,10 +8465,14 @@ function wrapText(ctx, text, maxWidth) {
         let currentLine = '';
 
         words.forEach(word => {
+            // If the word alone overflows, char-break it instead of overflowing.
+            if (ctx.measureText(word).width > maxWidth) {
+                if (currentLine) { lines.push(currentLine); currentLine = ''; }
+                currentLine = breakLongWord(word, '');
+                return;
+            }
             const testLine = currentLine + (currentLine ? ' ' : '') + word;
-            const metrics = ctx.measureText(testLine);
-
-            if (metrics.width > maxWidth && currentLine) {
+            if (ctx.measureText(testLine).width > maxWidth && currentLine) {
                 lines.push(currentLine);
                 currentLine = word;
             } else {
