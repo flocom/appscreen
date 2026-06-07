@@ -1884,45 +1884,70 @@
     <!-- Languages Modal -->
     <div class="modal-overlay" id="languages-modal">
         <div class="modal languages-modal">
-            <div class="modal-header">
-                <h3 class="modal-title">Project Languages</h3>
-                <button class="modal-close" id="languages-modal-close">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M18 6L6 18M6 6l12 12"/>
-                    </svg>
+            <div class="modal-header lang-header">
+                <div class="lang-header-text">
+                    <h3 class="modal-title">Project Languages</h3>
+                    <p class="lang-subtitle">Manage locales, upload localized screenshots, and import text.</p>
+                </div>
+                <span class="lang-count-chip" id="lang-count-chip">0</span>
+                <button class="modal-close" id="languages-modal-close" aria-label="Close">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                 </button>
             </div>
 
-            <p class="modal-message">Manage languages, upload localized screenshots, and import text.</p>
+            <div class="lang-body">
+                <div class="lang-addbar">
+                    <div class="lang-select-wrap">
+                        <svg class="lang-select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20"/></svg>
+                        <select id="add-language-select" class="lang-select">
+                            <option value="">Add a language…</option>
+                        </select>
+                    </div>
+                    <button class="lang-btn lang-btn-accent" id="add-all-languages-btn" title="Add every App Store language">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+                        All App Store
+                    </button>
+                </div>
 
-            <div class="add-language-section">
-                <select id="add-language-select" class="control-select">
-                    <option value="">Add a language...</option>
-                </select>
-                <button class="modal-btn" id="add-all-languages-btn" title="Add every App Store language">+ All App Store languages</button>
-            </div>
+                <div class="lang-section-label">Languages</div>
+                <div class="languages-list" id="languages-list"></div>
 
-            <div class="languages-list" id="languages-list">
-                <!-- Languages will be populated by JS (stacked, with per-language drop zones) -->
-            </div>
+                <div class="lang-divider"></div>
 
-            <div class="lang-tools">
-                <button class="modal-btn" id="folder-import-btn" title="Import a folder; sub-folders named by language (e.g. ms/, de-DE/) are classified automatically">📁 Import folder</button>
-                <button class="modal-btn" id="csv-template-btn" title="Download a CSV of all text to edit and re-import">⬇︎ Text CSV template</button>
-                <button class="modal-btn" id="csv-import-btn" title="Import a filled-in CSV to apply text">⬆︎ Import text CSV</button>
+                <div class="lang-section-label">Bulk import &amp; text</div>
+                <div class="lang-actions-grid">
+                    <button class="lang-action" id="folder-import-btn" title="Sub-folders named by language (ms/, de-DE/…) are classified automatically">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                        <span><b>Import folder</b><small>fastlane sub-folders by language</small></span>
+                    </button>
+                    <button class="lang-action" id="csv-template-btn" title="Download a CSV of all text to edit">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                        <span><b>Text CSV template</b><small>download all text</small></span>
+                    </button>
+                    <button class="lang-action" id="csv-import-btn" title="Import a filled-in CSV to apply text">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                        <span><b>Import text CSV</b><small>apply filled-in text</small></span>
+                    </button>
+                </div>
                 <input type="file" id="folder-import-input" webkitdirectory directory multiple hidden>
                 <input type="file" id="csv-import-input" accept=".csv,text/csv" hidden>
+
+                <div class="lang-divider"></div>
+
+                <div class="lang-sync-card">
+                    <div class="lang-sync-info">
+                        <b>Sync main language</b>
+                        <small>Apply edits made in the main language to every other language automatically.</small>
+                    </div>
+                    <label class="lang-switch" title="Toggle main-language sync">
+                        <input type="checkbox" id="sync-main-language">
+                        <span class="lang-switch-track"><span class="lang-switch-thumb"></span></span>
+                    </label>
+                </div>
+                <button class="lang-btn lang-btn-ghost lang-btn-full" id="propagate-main-btn" title="Copy the main language's text & layout to every language now">Copy main language to all now</button>
             </div>
 
-            <label class="lang-sync-row">
-                <input type="checkbox" id="sync-main-language">
-                <span>Sync main language → apply edits in the main language to all others</span>
-            </label>
-            <div class="lang-tools">
-                <button class="modal-btn" id="propagate-main-btn" title="Copy the main language's text & layout to every language now">Copy main language to all now</button>
-            </div>
-
-            <div class="modal-buttons">
+            <div class="modal-buttons lang-footer">
                 <button class="modal-btn modal-btn-confirm" id="languages-modal-done" style="background: var(--accent);">Done</button>
             </div>
         </div>
