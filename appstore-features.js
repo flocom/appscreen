@@ -242,11 +242,14 @@ if (typeof window !== 'undefined' && typeof setTextValue === 'function') {
     };
 }
 
-// ---- Override updateLanguagesList: stacked rows + per-language drop zones ----
+// ---- Override updateLanguagesList: language cards + per-language drop zones ----
 function updateLanguagesList() {
     const container = document.getElementById('languages-list');
     if (!container) return;
     container.innerHTML = '';
+
+    const chip = document.getElementById('lang-count-chip');
+    if (chip) chip.textContent = state.projectLanguages.length;
 
     state.projectLanguages.forEach((lang, i) => {
         const flag = languageFlags[lang] || '🏳️';
@@ -257,26 +260,30 @@ function updateLanguagesList() {
         const count = countImagesForLanguage(lang);
 
         const item = document.createElement('div');
-        item.className = 'language-item-stacked';
+        item.className = 'lang-card';
         item.innerHTML = `
-            <div class="lang-row-head">
-                <span class="flag">${flag}</span>
-                <span class="name">${name}</span>
-                ${isMain ? '<span class="main-badge">Main</span>' : ''}
-                ${isCurrent ? '<span class="current-badge">Current</span>' : ''}
-                <span class="lang-count">${count} img</span>
-                <button class="remove-btn" ${isOnly ? 'disabled' : ''} title="${isOnly ? 'Cannot remove the only language' : 'Remove language'}">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            <div class="lang-card-head">
+                <div class="lang-flag-tile">${flag}</div>
+                <div class="lang-meta">
+                    <div class="lang-name-row">
+                        <span class="lang-name">${name}</span>
+                        ${isMain ? '<span class="lang-badge main">Main</span>' : ''}
+                        ${isCurrent ? '<span class="lang-badge current">Current</span>' : ''}
+                    </div>
+                    <div class="lang-sub">${lang} · ${count} screenshot${count === 1 ? '' : 's'}</div>
+                </div>
+                <button class="lang-remove" ${isOnly ? 'disabled' : ''} title="${isOnly ? 'Cannot remove the only language' : 'Remove language'}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                 </button>
             </div>
-            <div class="lang-dropzone" tabindex="0">
+            <div class="lang-dropzone${count > 0 ? ' has-img' : ''}" tabindex="0">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
                 <span>Drop ${name} screenshots here, or click to browse</span>
                 <input type="file" accept="image/*" multiple hidden>
             </div>
         `;
 
-        const removeBtn = item.querySelector('.remove-btn');
+        const removeBtn = item.querySelector('.lang-remove');
         if (!isOnly) removeBtn.addEventListener('click', () => removeProjectLanguage(lang));
 
         const dz = item.querySelector('.lang-dropzone');
