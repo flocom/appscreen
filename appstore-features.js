@@ -571,7 +571,9 @@ function initCanvasViewToggle() {
 // Device notch (2D "Device Model") + text background controls
 // ============================================================================
 // Per-model corner-radius defaults (slider value; render scales it).
-const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34, ipad: 28 };
+// iPad corners are far subtler than a phone's (~2-3% of width), so a low value
+// here is what makes the mockup actually read as an iPad rather than a big phone.
+const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34, ipad: 12 };
 
 function initDeviceTextExtras() {
     // 2D Device Model (iPhone / Samsung) — auto-adapts corner radius + notch.
