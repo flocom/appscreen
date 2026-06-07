@@ -635,6 +635,54 @@
                                     </svg>
                                     <span>Float Bottom</span>
                                 </button>
+                                <button class="position-preset" data-preset="hero" title="Hero">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="5" y="16" width="30" height="44" rx="2"/>
+                                    </svg>
+                                    <span>Hero</span>
+                                </button>
+                                <button class="position-preset" data-preset="showcase-bottom" title="Showcase Bottom">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="6" y="26" width="28" height="50" rx="2"/>
+                                    </svg>
+                                    <span>Showcase ↓</span>
+                                </button>
+                                <button class="position-preset" data-preset="showcase-top" title="Showcase Top">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="6" y="-16" width="28" height="50" rx="2"/>
+                                    </svg>
+                                    <span>Showcase ↑</span>
+                                </button>
+                                <button class="position-preset" data-preset="tilt-left-strong" title="Tilt Left Strong">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="9" y="13" width="22" height="34" rx="2" transform="rotate(-14 20 30)"/>
+                                    </svg>
+                                    <span>Tilt L+</span>
+                                </button>
+                                <button class="position-preset" data-preset="tilt-right-strong" title="Tilt Right Strong">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="9" y="13" width="22" height="34" rx="2" transform="rotate(14 20 30)"/>
+                                    </svg>
+                                    <span>Tilt R+</span>
+                                </button>
+                                <button class="position-preset" data-preset="perspective-left" title="Perspective Left">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M12 12 L28 15 L30 45 L10 48 Z"/>
+                                    </svg>
+                                    <span>Perspective ←</span>
+                                </button>
+                                <button class="position-preset" data-preset="minimal" title="Minimal">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="13" y="20" width="14" height="21" rx="2"/>
+                                    </svg>
+                                    <span>Minimal</span>
+                                </button>
+                                <button class="position-preset" data-preset="full-bleed" title="Full Bleed">
+                                    <svg viewBox="0 0 40 60" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="2" y="2" width="36" height="56" rx="2"/>
+                                    </svg>
+                                    <span>Full Bleed</span>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -1840,16 +1888,33 @@
                 </button>
             </div>
 
-            <p class="modal-message">Manage the languages available for text in this project.</p>
-
-            <div class="languages-list" id="languages-list">
-                <!-- Languages will be populated by JS -->
-            </div>
+            <p class="modal-message">Manage languages, upload localized screenshots, and import text.</p>
 
             <div class="add-language-section">
                 <select id="add-language-select" class="control-select">
                     <option value="">Add a language...</option>
                 </select>
+                <button class="modal-btn" id="add-all-languages-btn" title="Add every App Store language">+ All App Store languages</button>
+            </div>
+
+            <div class="languages-list" id="languages-list">
+                <!-- Languages will be populated by JS (stacked, with per-language drop zones) -->
+            </div>
+
+            <div class="lang-tools">
+                <button class="modal-btn" id="folder-import-btn" title="Import a folder; sub-folders named by language (e.g. ms/, de-DE/) are classified automatically">📁 Import folder</button>
+                <button class="modal-btn" id="csv-template-btn" title="Download a CSV of all text to edit and re-import">⬇︎ Text CSV template</button>
+                <button class="modal-btn" id="csv-import-btn" title="Import a filled-in CSV to apply text">⬆︎ Import text CSV</button>
+                <input type="file" id="folder-import-input" webkitdirectory directory multiple hidden>
+                <input type="file" id="csv-import-input" accept=".csv,text/csv" hidden>
+            </div>
+
+            <label class="lang-sync-row">
+                <input type="checkbox" id="sync-main-language">
+                <span>Sync main language → apply edits in the main language to all others</span>
+            </label>
+            <div class="lang-tools">
+                <button class="modal-btn" id="propagate-main-btn" title="Copy the main language's text & layout to every language now">Copy main language to all now</button>
             </div>
 
             <div class="modal-buttons">
@@ -2000,5 +2065,6 @@
     <script src="lucide-icons.js"></script>
     <script src="three-renderer.js"></script>
     <script src="app.js"></script>
+    <script src="appstore-features.js"></script>
 </body>
 </html>

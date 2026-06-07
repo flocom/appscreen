@@ -590,12 +590,14 @@ function setCurrentScreenshotAsDefault() {
 
 // Language flags mapping
 const languageFlags = {
-    'en': '🇺🇸', 'en-gb': '🇬🇧', 'de': '🇩🇪', 'fr': '🇫🇷', 'es': '🇪🇸',
+    'en': '🇺🇸', 'en-au': '🇦🇺', 'en-ca': '🇨🇦', 'en-gb': '🇬🇧', 'de': '🇩🇪',
+    'fr': '🇫🇷', 'fr-ca': '🇨🇦', 'es': '🇪🇸', 'es-mx': '🇲🇽',
     'it': '🇮🇹', 'pt': '🇵🇹', 'pt-br': '🇧🇷', 'nl': '🇳🇱', 'ru': '🇷🇺',
     'ja': '🇯🇵', 'ko': '🇰🇷', 'zh': '🇨🇳', 'zh-tw': '🇹🇼', 'ar': '🇸🇦',
     'hi': '🇮🇳', 'tr': '🇹🇷', 'pl': '🇵🇱', 'sv': '🇸🇪', 'da': '🇩🇰',
     'no': '🇳🇴', 'fi': '🇫🇮', 'th': '🇹🇭', 'vi': '🇻🇳', 'id': '🇮🇩',
-    'uk': '🇺🇦'
+    'uk': '🇺🇦', 'ca': '🇪🇸', 'cs': '🇨🇿', 'el': '🇬🇷', 'he': '🇮🇱',
+    'hr': '🇭🇷', 'hu': '🇭🇺', 'ms': '🇲🇾', 'ro': '🇷🇴', 'sk': '🇸🇰'
 };
 
 // Google Fonts configuration
@@ -5012,14 +5014,19 @@ function updateSubheadlineLanguageUI() {
 // Translate modal functions
 let currentTranslateTarget = null;
 
+// Full set of App Store Connect localizations (39).
 const languageNames = {
-    'en': 'English (US)', 'en-gb': 'English (UK)', 'de': 'German', 'fr': 'French',
-    'es': 'Spanish', 'it': 'Italian', 'pt': 'Portuguese', 'pt-br': 'Portuguese (BR)',
+    'en': 'English (US)', 'en-au': 'English (Australia)', 'en-ca': 'English (Canada)',
+    'en-gb': 'English (UK)', 'de': 'German', 'fr': 'French', 'fr-ca': 'French (Canada)',
+    'es': 'Spanish', 'es-mx': 'Spanish (Mexico)', 'it': 'Italian',
+    'pt': 'Portuguese (Portugal)', 'pt-br': 'Portuguese (Brazil)',
     'nl': 'Dutch', 'ru': 'Russian', 'ja': 'Japanese', 'ko': 'Korean',
     'zh': 'Chinese (Simplified)', 'zh-tw': 'Chinese (Traditional)', 'ar': 'Arabic',
     'hi': 'Hindi', 'tr': 'Turkish', 'pl': 'Polish', 'sv': 'Swedish',
     'da': 'Danish', 'no': 'Norwegian', 'fi': 'Finnish', 'th': 'Thai',
-    'vi': 'Vietnamese', 'id': 'Indonesian', 'uk': 'Ukrainian'
+    'vi': 'Vietnamese', 'id': 'Indonesian', 'uk': 'Ukrainian',
+    'ca': 'Catalan', 'cs': 'Czech', 'el': 'Greek', 'he': 'Hebrew',
+    'hr': 'Croatian', 'hu': 'Hungarian', 'ms': 'Malay', 'ro': 'Romanian', 'sk': 'Slovak'
 };
 
 function openTranslateModal(target) {
@@ -6171,7 +6178,16 @@ function applyPositionPreset(preset) {
         'tilt-left': { scale: 65, x: 50, y: 60, rotation: -8, perspective: 0 },
         'tilt-right': { scale: 65, x: 50, y: 60, rotation: 8, perspective: 0 },
         'perspective': { scale: 65, x: 50, y: 50, rotation: 0, perspective: 15 },
-        'float-bottom': { scale: 55, x: 50, y: 70, rotation: 0, perspective: 0 }
+        'float-bottom': { scale: 55, x: 50, y: 70, rotation: 0, perspective: 0 },
+        // Trending App Store layouts
+        'hero': { scale: 88, x: 50, y: 66, rotation: 0, perspective: 0 },          // big device, headline on top
+        'showcase-bottom': { scale: 82, x: 50, y: 135, rotation: 0, perspective: 0 }, // headline top, device bleeds off bottom
+        'showcase-top': { scale: 82, x: 50, y: -35, rotation: 0, perspective: 0 },    // headline bottom, device bleeds off top
+        'tilt-left-strong': { scale: 62, x: 50, y: 62, rotation: -14, perspective: 0 },
+        'tilt-right-strong': { scale: 62, x: 50, y: 62, rotation: 14, perspective: 0 },
+        'perspective-left': { scale: 65, x: 50, y: 50, rotation: 0, perspective: -15 },
+        'minimal': { scale: 48, x: 50, y: 52, rotation: 0, perspective: 0 },          // small, lots of negative space
+        'full-bleed': { scale: 100, x: 50, y: 50, rotation: 0, perspective: 0 }       // device fills the frame
     };
 
     const p = presets[preset];
