@@ -5935,17 +5935,22 @@ function saveSettings() {
 // Last known connection state (runtime only).
 let mcpState = { connected: false, tools: [], url: '', info: '' };
 
-// Derive a sensible default MCP server URL from the page's own origin: same
-// protocol + host the app is served from, on the MCP server's default port 3000.
-// This makes localhost and LAN (e.g. http://192.168.x.x:8000) work out of the box.
+// Derive a sensible default MCP server URL from the page's own origin:
+//  - Served over HTTPS (production / Cloudflare Tunnel / reverse proxy): assume the
+//    server sits behind the same origin on the standard port → https://<host>/mcp
+//    (no :3000 — Cloudflare doesn't proxy port 3000 anyway).
+//  - Served over HTTP (local dev / LAN, e.g. http://192.168.x.x:8000): the server's
+//    default port is 3000 → http://<host>:3000/mcp
 // Falls back to localhost for file:// or when the host can't be determined.
 function defaultMcpUrl() {
     try {
         const loc = window.location;
         const host = loc.hostname;
         if (host) {
-            const proto = loc.protocol === 'https:' ? 'https:' : 'http:';
-            return `${proto}//${host}:3000/mcp`;
+            if (loc.protocol === 'https:') {
+                return `https://${host}/mcp`;
+            }
+            return `http://${host}:3000/mcp`;
         }
     } catch (e) { /* ignore */ }
     return 'http://localhost:3000/mcp';
