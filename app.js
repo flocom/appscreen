@@ -1545,12 +1545,18 @@ const RemoteStore = {
     async put(record) {
         const b = this.baseUrl(); if (!b || !record || !record.id) return false;
         try {
+            setSyncStatus('syncing', 'Envoi sur le disque…');
             const payload = await buildRemotePayload(record);
             const r = await fetch(b + '/projects/' + encodeURIComponent(record.id), {
                 method: 'PUT', headers: this._headers(true), body: JSON.stringify(payload)
             });
+            setSyncStatus(r.ok ? 'ok' : 'error', r.ok ? 'Enregistré sur le disque' : 'Échec de l’enregistrement (HTTP ' + r.status + ')');
             return r.ok;
-        } catch (e) { console.warn('MCP project push failed:', e); return false; }
+        } catch (e) {
+            console.warn('MCP project push failed:', e);
+            setSyncStatus('error', 'Serveur injoignable');
+            return false;
+        }
     },
     async del(id) {
         const b = this.baseUrl(); if (!b) return false;
@@ -1580,6 +1586,27 @@ function setProjectLoading(v) {
     }
 }
 
+// Floating indicator shown while a project is being saved to the server's disk.
+// state: 'syncing' | 'ok' | 'error' | 'idle'.
+function setSyncStatus(state, msg) {
+    if (typeof document === 'undefined') return;
+    let el = document.getElementById('sync-pill');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'sync-pill';
+        (document.body || document.documentElement).appendChild(el);
+    }
+    el.className = 'sync-pill ' + state;
+    el.innerHTML = (state === 'syncing' ? '<span class="sync-spinner"></span>' : '')
+        + '<span>' + (msg || '') + '</span>';
+    clearTimeout(setSyncStatus._t);
+    if (state === 'idle') { el.style.display = 'none'; return; }
+    el.style.display = 'flex';
+    if (state === 'ok' || state === 'error') {
+        setSyncStatus._t = setTimeout(() => { el.style.display = 'none'; }, state === 'ok' ? 1800 : 4500);
+    }
+}
+
 // Debounced push of the current project to the server (coalesces rapid edits).
 let _remotePushTimer = null;
 let _remotePushRecord = null;
@@ -1605,9 +1632,11 @@ function scheduleRemotePush(record) {
 // the server is unreachable.
 async function syncWithRemote() {
     if (!RemoteStore.enabled()) return;
+    setSyncStatus('syncing', 'Synchronisation…');
     const serverList = await RemoteStore.list();
     if (serverList === null) {
         console.warn('MCP project sync: server unreachable — using local cache.');
+        setSyncStatus('error', 'Serveur injoignable — cache local utilisé');
         return;
     }
     const serverCounts = new Map(serverList.map(p => [p.id, p.screenshotCount || 0]));
@@ -1652,6 +1681,7 @@ async function syncWithRemote() {
     projects = merged;
     remoteProjectIds = serverIds; // every id here now exists on the server's disk
     saveProjectsMeta();
+    setSyncStatus('ok', 'Synchronisé');
 }
 
 // Update project selector dropdown
@@ -1710,6 +1740,12 @@ async function init() {
         await loadState();
         syncUIWithState();
         updateCanvas();
+        // Auto-connect to the MCP server so the connection status persists across
+        // reloads (the sync above already works over REST regardless).
+        const savedMcpUrl = localStorage.getItem('mcpServerUrl');
+        if (savedMcpUrl) {
+            connectMcpServer(savedMcpUrl, localStorage.getItem('mcpServerToken') || '');
+        }
     } catch (e) {
         console.error('Initialization error:', e);
         // Continue with defaults
@@ -1944,70 +1980,62 @@ function loadState() {
                                 loadedCount++;
                                 checkAllLoaded();
                             } else if (hasLocalizedImages) {
-                                // New format: load all localized images
+                                // New format: load all localized images. A broken/slow
+                                // image must NOT stall loading — onerror still completes
+                                // (keeping src so the image data is never dropped).
                                 const langKeys = Object.keys(s.localizedImages);
                                 let langLoadedCount = 0;
                                 const localizedImages = {};
+
+                                const finishScreenshot = () => {
+                                    const firstLang = Object.keys(localizedImages)[0];
+                                    const screenshotSettings = s.screenshot || JSON.parse(JSON.stringify(migratedScreenshot));
+                                    if (needs3DMigration) {
+                                        migrate3DPosition(screenshotSettings);
+                                    }
+                                    state.screenshots[index] = {
+                                        image: firstLang ? localizedImages[firstLang]?.image : null, // Legacy compat
+                                        name: s.name,
+                                        deviceType: s.deviceType,
+                                        localizedImages: localizedImages,
+                                        background: s.background || JSON.parse(JSON.stringify(migratedBackground)),
+                                        screenshot: screenshotSettings,
+                                        text: s.text || JSON.parse(JSON.stringify(migratedText)),
+                                        elements: reconstructElementImages(s.elements),
+                                        popouts: s.popouts || [],
+                                        overrides: s.overrides || {}
+                                    };
+                                    loadedCount++;
+                                    checkAllLoaded();
+                                };
+                                const langDone = () => { if (++langLoadedCount === langKeys.length) finishScreenshot(); };
 
                                 langKeys.forEach(lang => {
                                     const langData = s.localizedImages[lang];
                                     if (langData?.src) {
                                         const langImg = new Image();
                                         langImg.onload = () => {
-                                            localizedImages[lang] = {
-                                                image: langImg,
-                                                src: langData.src,
-                                                name: langData.name || s.name
-                                            };
-                                            langLoadedCount++;
-
-                                            if (langLoadedCount === langKeys.length) {
-                                                // All language versions loaded
-                                                const firstLang = langKeys[0];
-                                                const screenshotSettings = s.screenshot || JSON.parse(JSON.stringify(migratedScreenshot));
-                                                if (needs3DMigration) {
-                                                    migrate3DPosition(screenshotSettings);
-                                                }
-                                                state.screenshots[index] = {
-                                                    image: localizedImages[firstLang]?.image, // Legacy compat
-                                                    name: s.name,
-                                                    deviceType: s.deviceType,
-                                                    localizedImages: localizedImages,
-                                                    background: s.background || JSON.parse(JSON.stringify(migratedBackground)),
-                                                    screenshot: screenshotSettings,
-                                                    text: s.text || JSON.parse(JSON.stringify(migratedText)),
-                                                    elements: reconstructElementImages(s.elements),
-                                                    popouts: s.popouts || [],
-                                                    overrides: s.overrides || {}
-                                                };
-                                                loadedCount++;
-                                                checkAllLoaded();
-                                            }
+                                            localizedImages[lang] = { image: langImg, src: langData.src, name: langData.name || s.name };
+                                            langDone();
+                                        };
+                                        langImg.onerror = () => {
+                                            // Preserve src even if the bitmap fails to decode.
+                                            localizedImages[lang] = { image: null, src: langData.src, name: langData.name || s.name };
+                                            langDone();
                                         };
                                         langImg.src = langData.src;
                                     } else {
-                                        langLoadedCount++;
-                                        if (langLoadedCount === langKeys.length) {
-                                            loadedCount++;
-                                            checkAllLoaded();
-                                        }
+                                        langDone();
                                     }
                                 });
                             } else {
                                 // Old format: migrate to localized images
-                                const img = new Image();
-                                img.onload = () => {
-                                    // Detect language from filename, default to 'en'
+                                const finishOld = (img) => {
                                     const detectedLang = typeof detectLanguageFromFilename === 'function'
                                         ? detectLanguageFromFilename(s.name || '')
                                         : 'en';
-
                                     const localizedImages = {};
-                                    localizedImages[detectedLang] = {
-                                        image: img,
-                                        src: s.src,
-                                        name: s.name
-                                    };
+                                    localizedImages[detectedLang] = { image: img, src: s.src, name: s.name };
 
                                     const screenshotSettings = s.screenshot || JSON.parse(JSON.stringify(migratedScreenshot));
                                     if (needs3DMigration) {
@@ -2028,6 +2056,9 @@ function loadState() {
                                     loadedCount++;
                                     checkAllLoaded();
                                 };
+                                const img = new Image();
+                                img.onload = () => finishOld(img);
+                                img.onerror = () => finishOld(null); // preserve src even if decode fails
                                 img.src = s.src;
                             }
                         });

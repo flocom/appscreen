@@ -578,12 +578,28 @@ async function runHttp(port: number) {
   const app = express();
 
   // CORS so a browser (e.g. the appscreen web app's Settings → MCP connection)
-  // can reach this server. Override the allowed origin with MCP_CORS_ORIGIN.
-  const corsOrigin = process.env.MCP_CORS_ORIGIN || "*";
+  // can reach this server. MCP_CORS_ORIGIN is a comma-separated allowlist; the
+  // default "*" reflects whatever Origin the request carries (no credentials are
+  // used, so echoing the origin is safe and works for any deployment domain).
+  const corsAllow = (process.env.MCP_CORS_ORIGIN || "*")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const allowAnyOrigin = corsAllow.includes("*");
   app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", corsOrigin);
+    const reqOrigin = req.headers.origin;
+    let allowOrigin: string;
+    if (allowAnyOrigin) {
+      allowOrigin = reqOrigin || "*"; // reflect the caller's origin when present
+    } else if (reqOrigin && corsAllow.includes(reqOrigin)) {
+      allowOrigin = reqOrigin;
+    } else {
+      allowOrigin = corsAllow[0]; // fall back to the first configured origin
+    }
+    res.header("Access-Control-Allow-Origin", allowOrigin);
     res.header("Vary", "Origin");
-    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    // Includes PUT/DELETE for the project REST API (GET/PUT/DELETE /projects).
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     res.header(
       "Access-Control-Allow-Headers",
       "Content-Type, Authorization, Accept, mcp-session-id, mcp-protocol-version, last-event-id",
