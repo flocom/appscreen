@@ -22,6 +22,7 @@ import {
   listProjects,
   getProject,
   saveProject,
+  ConflictError,
   deleteProject,
   createProject,
   addScreenshot,
@@ -827,9 +828,21 @@ async function runHttp(port: number) {
           res.status(400).json({ error: "record needs a screenshots array" });
           return;
         }
-        const saved = await saveProject(rec);
-        res.json({ ok: true, id: saved.id, updatedAt: saved.updatedAt });
+        // Optimistic concurrency: the client sends the rev it based its edit on
+        // (If-Match header, or `rev` in the body). A stale write is rejected with
+        // 409 so a long-idle tab can't clobber data Claude/MCP pushed meanwhile.
+        const hdr = req.get("If-Match");
+        const baseRev =
+          hdr != null && /^\d+$/.test(hdr) ? parseInt(hdr, 10)
+          : typeof rec.rev === "number" ? rec.rev
+          : undefined;
+        const saved = await saveProject(rec, { baseRev });
+        res.json({ ok: true, id: saved.id, rev: saved.rev, updatedAt: saved.updatedAt });
       } catch (e: any) {
+        if (e instanceof ConflictError) {
+          res.status(409).json({ error: "conflict", rev: e.currentRev });
+          return;
+        }
         res.status(500).json({ error: String(e?.message ?? e) });
       }
     });

@@ -217,13 +217,24 @@ export interface ProjectRecord {
   projectLanguages?: string[];
   defaults?: any;
   updatedAt?: string;
+  rev?: number;
   [k: string]: any;
+}
+
+/** Thrown by saveProject when a write's base revision is older than what's on disk. */
+export class ConflictError extends Error {
+  currentRev: number;
+  constructor(currentRev: number) {
+    super(`conflict: project was modified by someone else (current rev ${currentRev})`);
+    this.name = "ConflictError";
+    this.currentRev = currentRev;
+  }
 }
 
 // ---------- CRUD ----------
 
 export async function listProjects(): Promise<
-  { id: string; name: string; screenshotCount: number; languages: string[]; updatedAt?: string }[]
+  { id: string; name: string; screenshotCount: number; languages: string[]; updatedAt?: string; rev: number }[]
 > {
   await ensureDir();
   const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json"));
@@ -237,6 +248,7 @@ export async function listProjects(): Promise<
         screenshotCount: Array.isArray(rec.screenshots) ? rec.screenshots.length : 0,
         languages: rec.projectLanguages || ["en"],
         updatedAt: rec.updatedAt,
+        rev: typeof rec.rev === "number" ? rec.rev : 0,
       });
     } catch {
       // skip unreadable / non-project files
@@ -263,7 +275,20 @@ export async function getProject(
   return rec;
 }
 
-export async function saveProject(rec: ProjectRecord): Promise<ProjectRecord> {
+/** Read just the stored revision of a project (0 if it exists without one, null if absent). */
+async function readRev(id: string): Promise<number | null> {
+  try {
+    const rec = JSON.parse(await readFile(fileFor(id), "utf8")) as ProjectRecord;
+    return typeof rec.rev === "number" ? rec.rev : 0;
+  } catch {
+    return null; // no existing record
+  }
+}
+
+export async function saveProject(
+  rec: ProjectRecord,
+  opts: { baseRev?: number } = {},
+): Promise<ProjectRecord> {
   await ensureDir();
   if (!rec || !rec.id) throw new Error("project record needs an id");
   rec.id = safeId(rec.id);
@@ -271,6 +296,17 @@ export async function saveProject(rec: ProjectRecord): Promise<ProjectRecord> {
   // Externalize any inline data URLs to the blob store (no-op for refs the web
   // app already uploaded). Keeps project.json tiny and dedups image bytes.
   await externalizeRecord(rec);
+  // Optimistic concurrency: bump a monotonic rev on every write. When the caller
+  // passes baseRev (the web app sends the rev it loaded), reject a write whose
+  // base is older than what's on disk — that's a stale tab trying to overwrite
+  // newer data (e.g. screenshots Claude/MCP pushed while it sat idle). MCP tools
+  // omit baseRev: they read-modify-write fresh state and always win. Read→write
+  // has no await in between, so the rev stays monotonic under Node's single thread.
+  const prevRev = await readRev(rec.id);
+  if (opts.baseRev != null && prevRev != null && opts.baseRev < prevRev) {
+    throw new ConflictError(prevRev);
+  }
+  rec.rev = (prevRev ?? 0) + 1;
   rec.updatedAt = new Date().toISOString();
   await writeFile(fileFor(rec.id), JSON.stringify(rec));
   return rec;
