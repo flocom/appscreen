@@ -9,8 +9,9 @@
 // Both the MCP tools (for Claude) and the REST endpoints (for the web app)
 // read/write through the helpers here, so the two stay in sync.
 
-import { mkdir, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { getFile as getUploadedFile } from "./filestore.js";
 
 // ---------- Location on disk ----------
@@ -39,6 +40,107 @@ function safeId(id: string): string {
 function fileFor(id: string): string {
   return join(PROJECTS_DIR, `${safeId(id)}.json`);
 }
+
+// ---------- Content-addressed image blob store ----------
+// Images are stored once, by content hash, in a global `.blobs` dir (dedup across
+// languages AND projects). Project files keep only refs ("appdisk://<hash>.<ext>"),
+// so they stay tiny — the web app uploads image bytes separately as binary,
+// avoiding the giant base64 JSON that hit body-size limits and was slow.
+
+const BLOBS_DIR = join(PROJECTS_DIR, ".blobs");
+const REF_PREFIX = "appdisk://";
+
+let blobsReady = false;
+async function ensureBlobsDir(): Promise<void> {
+  if (blobsReady) return;
+  await mkdir(BLOBS_DIR, { recursive: true });
+  blobsReady = true;
+}
+
+function safeBlobName(name: string): string {
+  const clean = String(name || "").replace(/[^a-zA-Z0-9_.-]/g, "");
+  if (!clean || clean.includes("..")) throw new Error("invalid blob name");
+  return clean;
+}
+
+const EXT_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+  webp: "image/webp", gif: "image/gif", svg: "image/svg+xml", bmp: "image/bmp",
+};
+const mimeFromExt = (ext: string) => EXT_MIME[ext.toLowerCase()] || "application/octet-stream";
+const extFromMime = (m: string) =>
+  (m.split("/")[1] || "png").replace("jpeg", "jpg").replace("svg+xml", "svg");
+
+export async function blobExists(name: string): Promise<boolean> {
+  try { await stat(join(BLOBS_DIR, safeBlobName(name))); return true; } catch { return false; }
+}
+export async function putBlob(name: string, buf: Buffer): Promise<void> {
+  await ensureBlobsDir();
+  const p = join(BLOBS_DIR, safeBlobName(name));
+  // Content-addressed → if it already exists the bytes are identical; skip rewrite.
+  if (!(await blobExists(name))) await writeFile(p, buf);
+}
+export async function getBlob(name: string): Promise<Buffer | null> {
+  try { return await readFile(join(BLOBS_DIR, safeBlobName(name))); } catch { return null; }
+}
+/** Of the given blob names, return those NOT yet on disk (so the client only uploads new ones). */
+export async function missingBlobs(names: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const n of names || []) { if (!(await blobExists(n))) out.push(n); }
+  return out;
+}
+
+const isRef = (v: unknown): v is string => typeof v === "string" && v.startsWith(REF_PREFIX);
+
+async function walkStrings(obj: any, fn: (v: any) => Promise<any>): Promise<void> {
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) obj[i] = await visit(obj[i], fn);
+  } else if (obj && typeof obj === "object") {
+    for (const k of Object.keys(obj)) obj[k] = await visit(obj[k], fn);
+  }
+}
+async function visit(v: any, fn: (v: any) => Promise<any>): Promise<any> {
+  const mapped = await fn(v);
+  if (mapped !== v) return mapped;
+  if (v && typeof v === "object") await walkStrings(v, fn);
+  return v;
+}
+
+// Replace inline data:image URLs with refs, writing each unique image to the blob
+// store. Leaves existing refs untouched. Used by saveProject so MCP-tool data URLs
+// are externalized too.
+async function externalizeRecord(rec: ProjectRecord): Promise<void> {
+  await ensureBlobsDir();
+  await walkStrings(rec, async (v) => {
+    if (typeof v === "string" && v.startsWith("data:image/")) {
+      const comma = v.indexOf(",");
+      const header = v.slice(5, comma);
+      const mime = header.split(";")[0] || "image/png";
+      const buf = Buffer.from(v.slice(comma + 1), /;base64/i.test(header) ? "base64" : "utf8");
+      const hash = createHash("sha256").update(buf).digest("hex").slice(0, 40);
+      const name = `${hash}.${extFromMime(mime)}`;
+      await putBlob(name, buf);
+      return REF_PREFIX + name;
+    }
+    return v;
+  });
+}
+
+// Inverse: replace refs with reconstructed data URLs (for the browser, which
+// expects data URLs in screenshot.src / localizedImages[].src).
+async function inlineRecord(rec: ProjectRecord): Promise<void> {
+  await walkStrings(rec, async (v) => {
+    if (isRef(v)) {
+      const name = v.slice(REF_PREFIX.length);
+      const buf = await getBlob(name);
+      if (!buf) return v; // missing blob — leave the ref rather than corrupt
+      const ext = (name.split(".").pop() || "png").toLowerCase();
+      return `data:${mimeFromExt(ext)};base64,${buf.toString("base64")}`;
+    }
+    return v;
+  });
+}
+
 
 // ---------- Record shape (mirrors the web app's persisted project) ----------
 
@@ -84,13 +186,21 @@ export async function listProjects(): Promise<
   return out;
 }
 
-export async function getProject(id: string): Promise<ProjectRecord | null> {
+export async function getProject(
+  id: string,
+  opts: { inline?: boolean } = {},
+): Promise<ProjectRecord | null> {
   await ensureDir();
+  let rec: ProjectRecord;
   try {
-    return JSON.parse(await readFile(fileFor(id), "utf8")) as ProjectRecord;
+    rec = JSON.parse(await readFile(fileFor(id), "utf8")) as ProjectRecord;
   } catch {
     return null;
   }
+  // inline=true rebuilds data URLs from the blob store (for the browser). Default
+  // returns refs (compact — used by listing and MCP read-modify-write tools).
+  if (opts.inline) await inlineRecord(rec);
+  return rec;
 }
 
 export async function saveProject(rec: ProjectRecord): Promise<ProjectRecord> {
@@ -98,6 +208,9 @@ export async function saveProject(rec: ProjectRecord): Promise<ProjectRecord> {
   if (!rec || !rec.id) throw new Error("project record needs an id");
   rec.id = safeId(rec.id);
   if (!Array.isArray(rec.screenshots)) rec.screenshots = [];
+  // Externalize any inline data URLs to the blob store (no-op for refs the web
+  // app already uploaded). Keeps project.json tiny and dedups image bytes.
+  await externalizeRecord(rec);
   rec.updatedAt = new Date().toISOString();
   await writeFile(fileFor(rec.id), JSON.stringify(rec));
   return rec;
