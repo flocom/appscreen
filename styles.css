@@ -2517,11 +2517,13 @@ input[type="range"]::-webkit-slider-thumb {
     border-color: var(--border-color, rgba(255, 255, 255, 0.1));
 }
 
-/* Floating "saving to disk" indicator (see setSyncStatus in app.js). */
+/* Floating "saving to disk" indicator (see setSyncStatus in app.js).
+   Centered at the very top of the screen, above the Single / All languages toggle. */
 #sync-pill {
     position: fixed;
-    right: 16px;
-    bottom: 16px;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
     z-index: 10000;
     display: none;
     align-items: center;
