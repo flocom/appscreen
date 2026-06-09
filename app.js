@@ -1563,13 +1563,18 @@ async function externalizeForUpload(record) {
 
 const RemoteStore = {
     baseUrl() {
-        const url = localStorage.getItem('mcpServerUrl');
+        // Fall back to the page-derived default (same origin → ".../mcp") when no
+        // URL is saved, so a fresh browser / private window still finds the
+        // server and its projects (localStorage isn't shared with incognito).
+        const saved = localStorage.getItem('mcpServerUrl');
+        const url = saved || (typeof defaultMcpUrl === 'function' ? defaultMcpUrl() : null);
         if (!url) return null;
         // Keep the configured path (e.g. ".../mcp"): the server mounts the REST
         // API under both "/" and "/mcp", and a reverse proxy may only forward
-        // "/mcp/*" to it. We just append "/projects" to whatever is configured.
+        // "/mcp/*" to it. We just append "/projects" to whatever is resolved.
         return url.replace(/\/+$/, '');
     },
+    isExplicit() { return !!localStorage.getItem('mcpServerUrl'); },
     enabled() { return !!this.baseUrl(); },
     _headers(json) {
         const h = json ? { 'Content-Type': 'application/json' } : {};
@@ -1716,7 +1721,10 @@ async function syncWithRemote() {
     const serverList = await RemoteStore.list();
     if (serverList === null) {
         console.warn('MCP project sync: server unreachable — using local cache.');
-        setSyncStatus('error', 'Serveur injoignable — cache local utilisé');
+        // Only surface an error when the user explicitly configured a server;
+        // for an auto-detected URL that simply isn't there, stay silent.
+        setSyncStatus(RemoteStore.isExplicit() ? 'error' : 'idle',
+            RemoteStore.isExplicit() ? 'Serveur injoignable — cache local utilisé' : '');
         return;
     }
     const serverCounts = new Map(serverList.map(p => [p.id, p.screenshotCount || 0]));
@@ -1837,11 +1845,12 @@ async function init() {
         updateCanvas();
     }
     // Auto-connect to the MCP server so the connection status persists across
-    // reloads. Runs regardless of any error above (sync also works over REST).
+    // reloads. Uses the resolved URL (saved, else auto-detected from the page
+    // origin) so a fresh/private window connects too. Silent on failure.
     try {
-        const savedMcpUrl = localStorage.getItem('mcpServerUrl');
-        if (savedMcpUrl && typeof connectMcpServer === 'function') {
-            connectMcpServer(savedMcpUrl, localStorage.getItem('mcpServerToken') || '');
+        const url = RemoteStore.baseUrl();
+        if (url && typeof connectMcpServer === 'function') {
+            connectMcpServer(url, localStorage.getItem('mcpServerToken') || '', { silent: !RemoteStore.isExplicit() });
         }
     } catch (e) { /* non-fatal */ }
 }
@@ -6581,10 +6590,12 @@ function renderMcpTools(tools) {
 }
 
 // Initiate the MCP connection: handshake + list tools.
-async function connectMcpServer(url, token) {
+// opts.silent: don't show a scary error if it fails (used for auto-connect to an
+// auto-detected server that may not exist).
+async function connectMcpServer(url, token, opts = {}) {
     const toolsEl = document.getElementById('mcp-tools-list');
     if (!url) {
-        setMcpStatus('error', 'Enter a server URL first.');
+        if (!opts.silent) setMcpStatus('error', 'Enter a server URL first.');
         return;
     }
     setMcpStatus('connecting', 'Connecting…');
@@ -6608,6 +6619,10 @@ async function connectMcpServer(url, token) {
         syncWithRemote().then(() => updateProjectSelector()).catch(() => {});
     } catch (e) {
         mcpState = { connected: false, tools: [], url, info: '' };
+        if (opts.silent) {
+            setMcpStatus('', 'Not connected');
+            return;
+        }
         let hint = String((e && e.message) || e);
         if (/Failed to fetch|NetworkError|load failed/i.test(hint)) {
             hint = 'Could not reach the server. Check the URL, that the server is running, and CORS / mixed content (an HTTPS page cannot call an http:// server except on localhost).';
