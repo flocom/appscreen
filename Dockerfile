@@ -16,6 +16,15 @@ COPY *.html /usr/share/nginx/html/
 COPY *.css /usr/share/nginx/html/
 COPY *.js /usr/share/nginx/html/
 
+# Cache-busting: stamp a per-build version onto local JS/CSS references in
+# index.html (e.g. app.js -> app.js?v=1718000000). index.html itself is served
+# with no-cache (and isn't cached by Cloudflare), so each deploy points at fresh
+# asset URLs — the CDN can't keep serving a stale build, with no manual purge.
+# Only relative refs are matched ([^":?] excludes "https://" and existing "?v=").
+RUN BUILD_V="$(date +%s)" && \
+    sed -i -E "s@(src|href)=\"([^\":?]+\.(js|css))\"@\1=\"\2?v=${BUILD_V}\"@g" \
+        /usr/share/nginx/html/index.html
+
 # Copy assets
 COPY models/ /usr/share/nginx/html/models/
 COPY img/ /usr/share/nginx/html/img/
