@@ -94,27 +94,20 @@ function detectLanguageFromFilename(filename) {
 function getScreenshotImage(screenshot) {
     if (!screenshot) return null;
 
-    const lang = state.currentLanguage;
+    // Return a loaded bitmap, lazily decoding the entry from disk if needed
+    // (ensureEntryImage lives in app.js; returns null until loaded, then re-renders).
+    const pick = (entry) => {
+        if (!entry || !entry.src) return null;
+        if (entry.image) return entry.image;
+        return typeof ensureEntryImage === 'function' ? ensureEntryImage(entry) : null;
+    };
 
-    // Try current language first
-    if (screenshot.localizedImages?.[lang]?.image) {
-        return screenshot.localizedImages[lang].image;
-    }
-
-    // Fallback to first available language in project order
-    for (const l of state.projectLanguages) {
-        if (screenshot.localizedImages?.[l]?.image) {
-            return screenshot.localizedImages[l].image;
-        }
-    }
-
-    // Fallback to any available language
-    if (screenshot.localizedImages) {
-        for (const l of Object.keys(screenshot.localizedImages)) {
-            if (screenshot.localizedImages[l]?.image) {
-                return screenshot.localizedImages[l].image;
-            }
-        }
+    const li = screenshot.localizedImages;
+    if (li) {
+        const lang = state.currentLanguage;
+        if (li[lang]?.src) return pick(li[lang]);
+        for (const l of state.projectLanguages) if (li[l]?.src) return pick(li[l]);
+        for (const l of Object.keys(li)) if (li[l]?.src) return pick(li[l]);
     }
 
     // Legacy fallback for old screenshot format
@@ -129,8 +122,10 @@ function getScreenshotImage(screenshot) {
 function getAvailableLanguagesForScreenshot(screenshot) {
     if (!screenshot?.localizedImages) return [];
 
+    // Based on having an image SOURCE (ref or data URL), not a decoded bitmap —
+    // images load lazily now, so .image may be absent until shown.
     return Object.keys(screenshot.localizedImages).filter(
-        lang => screenshot.localizedImages[lang]?.image
+        lang => screenshot.localizedImages[lang]?.src
     );
 }
 
@@ -144,7 +139,7 @@ function isScreenshotComplete(screenshot) {
     if (state.projectLanguages.length === 0) return true;
 
     return state.projectLanguages.every(
-        lang => screenshot.localizedImages[lang]?.image
+        lang => screenshot.localizedImages[lang]?.src
     );
 }
 
@@ -273,7 +268,11 @@ function updateScreenshotTranslationsList() {
     container.innerHTML = '';
 
     state.projectLanguages.forEach(lang => {
-        const hasImage = screenshot.localizedImages?.[lang]?.image;
+        const entry = screenshot.localizedImages?.[lang];
+        const hasImage = !!(entry && entry.src);
+        // Load the thumbnail straight from the server blob URL (lazy, HTTP-cached)
+        // instead of requiring an already-decoded bitmap.
+        const thumbUrl = hasImage ? (typeof blobUrlForRef === 'function' ? blobUrlForRef(entry.src) : entry.src) : null;
         const flag = languageFlags[lang] || '🏳️';
         const name = languageNames[lang] || lang.toUpperCase();
 
@@ -281,20 +280,9 @@ function updateScreenshotTranslationsList() {
         item.className = 'translation-item' + (hasImage ? ' has-image' : '');
 
         if (hasImage) {
-            // Create thumbnail
-            const thumbCanvas = document.createElement('canvas');
-            thumbCanvas.width = 40;
-            thumbCanvas.height = 86;
-            const ctx = thumbCanvas.getContext('2d');
-            const img = screenshot.localizedImages[lang].image;
-            const scale = Math.min(40 / img.width, 86 / img.height);
-            const w = img.width * scale;
-            const h = img.height * scale;
-            ctx.drawImage(img, (40 - w) / 2, (86 - h) / 2, w, h);
-
             item.innerHTML = `
                 <div class="translation-thumb">
-                    <img src="${thumbCanvas.toDataURL()}" alt="${name}">
+                    <img src="${thumbUrl}" alt="${name}" loading="lazy">
                 </div>
                 <div class="translation-info">
                     <span class="flag">${flag}</span>
@@ -469,11 +457,16 @@ function showDuplicateDialog(params) {
         const newName = document.getElementById('duplicate-new-name');
         const langNameEl = document.getElementById('duplicate-lang-name');
 
-        // Get existing thumbnail for the specific language being replaced
-        const existingLangImg = screenshot.localizedImages?.[params.detectedLang]?.image;
+        // Get existing thumbnail for the specific language being replaced. Use the
+        // entry's source (ref/data URL) via a loadable URL — the bitmap may not be
+        // decoded yet (lazy loading).
+        const existingEntry = screenshot.localizedImages?.[params.detectedLang];
+        const existingUrl = existingEntry && existingEntry.src
+            ? (typeof blobUrlForRef === 'function' ? blobUrlForRef(existingEntry.src) : existingEntry.src)
+            : null;
         if (existingThumb) {
-            if (existingLangImg) {
-                existingThumb.innerHTML = `<img src="${existingLangImg.src}" alt="Existing">`;
+            if (existingUrl) {
+                existingThumb.innerHTML = `<img src="${existingUrl}" alt="Existing">`;
             } else {
                 // No existing image for this language - show empty placeholder
                 existingThumb.innerHTML = `
