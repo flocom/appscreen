@@ -1618,17 +1618,32 @@ async function fetchBlobDataUrl(base, id, name) {
     } catch (e) { return null; }
 }
 
-// Inverse of refify, on load: replace "appdisk://<name>" refs with data URLs from
-// the server's blob store. Fetches run in PARALLEL (capped) instead of one-by-one
-// — the old sequential version made image-heavy projects very slow to open.
-// Failed fetches leave the ref (image just won't show — offline). Mutates record.
+// Fetch the unique blob names referenced by `targets` (parallel, bounded
+// concurrency so we don't fire hundreds of requests at once) and write each
+// resolved data URL back into its location. Shared by both resolvers below.
+async function applyResolvedRefs(base, id, targets) {
+    const names = [...new Set(targets.map(t => t.name))];
+    const resolved = new Map();
+    const CONCURRENCY = 8;
+    let i = 0;
+    const worker = async () => {
+        while (i < names.length) {
+            const name = names[i++];
+            const du = await fetchBlobDataUrl(base, id, name);
+            if (du) resolved.set(name, du);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, names.length) }, worker));
+    for (const t of targets) { const du = resolved.get(t.name); if (du) t.obj[t.key] = du; }
+}
+
+// Inverse of refify: replace EVERY "appdisk://<name>" ref with a data URL from the
+// server's blob store (parallel). Used for export, where all languages' bytes are
+// needed. Failed fetches leave the ref (image just won't show — offline). Mutates.
 async function resolveRefsInRecord(record) {
     if (!record || typeof record !== 'object') return record;
     const base = RemoteStore.baseUrl();
     if (!base) return record; // no server reachable → can't resolve (offline)
-    const id = encodeURIComponent(currentProjectId);
-
-    // Collect every ref location + the set of unique blob names.
     const targets = [];
     const walk = (obj) => {
         const keys = Array.isArray(obj) ? obj.map((_, i) => i) : Object.keys(obj);
@@ -1642,22 +1657,7 @@ async function resolveRefsInRecord(record) {
         }
     };
     walk(record);
-    const names = [...new Set(targets.map(t => t.name))];
-
-    // Fetch with bounded concurrency so we don't fire hundreds of requests at once.
-    const resolved = new Map();
-    const CONCURRENCY = 8;
-    let i = 0;
-    async function worker() {
-        while (i < names.length) {
-            const name = names[i++];
-            const du = await fetchBlobDataUrl(base, id, name);
-            if (du) resolved.set(name, du);
-        }
-    }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, names.length) }, worker));
-
-    for (const t of targets) { const du = resolved.get(t.name); if (du) t.obj[t.key] = du; }
+    await applyResolvedRefs(base, encodeURIComponent(currentProjectId), targets);
     return record;
 }
 
@@ -1709,7 +1709,6 @@ async function resolveProjectRefs(record, lang) {
     if (!record || typeof record !== 'object') return record;
     const base = RemoteStore.baseUrl();
     if (!base) return record;
-    const id = encodeURIComponent(currentProjectId);
     const targets = [];
     const addRef = (obj, key) => {
         const v = obj && obj[key];
@@ -1727,19 +1726,7 @@ async function resolveProjectRefs(record, lang) {
             if (pick) addRef(li[pick], 'src');
         }
     }
-    const names = [...new Set(targets.map(t => t.name))];
-    const resolved = new Map();
-    const CONCURRENCY = 8;
-    let i = 0;
-    async function worker() {
-        while (i < names.length) {
-            const name = names[i++];
-            const du = await fetchBlobDataUrl(base, id, name);
-            if (du) resolved.set(name, du);
-        }
-    }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, names.length) }, worker));
-    for (const t of targets) { const du = resolved.get(t.name); if (du) t.obj[t.key] = du; }
+    await applyResolvedRefs(base, encodeURIComponent(currentProjectId), targets);
     return record;
 }
 
