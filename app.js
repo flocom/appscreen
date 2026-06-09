@@ -1596,51 +1596,150 @@ function refifyForIdb(record) {
     return clone;
 }
 
-// Inverse, on load: replace "appdisk://<name>" refs with data URLs fetched from
-// the server's blob store (browser HTTP-caches them, content-addressed/immutable).
+// Session cache of resolved blobs (name -> data URL), so switching back to a
+// project doesn't re-fetch/re-decode. The browser also HTTP-caches the blobs
+// (immutable), so even a fresh page load only downloads each image once.
+const blobDataUrlCache = new Map();
+
+async function fetchBlobDataUrl(base, id, name) {
+    if (blobDataUrlCache.has(name)) return blobDataUrlCache.get(name);
+    try {
+        const r = await fetch(base + '/projects/' + id + '/blobs/' + name, { headers: RemoteStore._headers(false) });
+        if (!r.ok) return null;
+        const blob = await r.blob();
+        const dataUrl = await new Promise((res) => {
+            const fr = new FileReader();
+            fr.onload = () => res(fr.result);
+            fr.onerror = () => res(null);
+            fr.readAsDataURL(blob);
+        });
+        if (dataUrl) { blobDataUrlCache.set(name, dataUrl); refCache.set(dataUrl, name); }
+        return dataUrl;
+    } catch (e) { return null; }
+}
+
+// Inverse of refify, on load: replace "appdisk://<name>" refs with data URLs from
+// the server's blob store. Fetches run in PARALLEL (capped) instead of one-by-one
+// — the old sequential version made image-heavy projects very slow to open.
 // Failed fetches leave the ref (image just won't show — offline). Mutates record.
 async function resolveRefsInRecord(record) {
     if (!record || typeof record !== 'object') return record;
     const base = RemoteStore.baseUrl();
     if (!base) return record; // no server reachable → can't resolve (offline)
     const id = encodeURIComponent(currentProjectId);
-    const inflight = new Map(); // name -> Promise<dataUrl|null>
-    const fetchDataUrl = (name) => {
-        if (inflight.has(name)) return inflight.get(name);
-        const p = (async () => {
-            try {
-                const r = await fetch(base + '/projects/' + id + '/blobs/' + name, { headers: RemoteStore._headers(false) });
-                if (!r.ok) return null;
-                const blob = await r.blob();
-                return await new Promise((res) => {
-                    const fr = new FileReader();
-                    fr.onload = () => res(fr.result);
-                    fr.onerror = () => res(null);
-                    fr.readAsDataURL(blob);
-                });
-            } catch (e) { return null; }
-        })();
-        inflight.set(name, p);
-        return p;
-    };
-    const handle = async (v) => {
-        if (typeof v === 'string' && v.startsWith(REF_SCHEME)) {
-            const name = v.slice(REF_SCHEME.length);
-            const dataUrl = await fetchDataUrl(name);
-            if (dataUrl) { refCache.set(dataUrl, name); return dataUrl; }
-            return v;
-        }
-        return v;
-    };
-    const walk = async (obj) => {
+
+    // Collect every ref location + the set of unique blob names.
+    const targets = [];
+    const walk = (obj) => {
         const keys = Array.isArray(obj) ? obj.map((_, i) => i) : Object.keys(obj);
         for (const k of keys) {
-            const mapped = await handle(obj[k]);
-            if (mapped !== obj[k]) obj[k] = mapped;
-            else if (obj[k] && typeof obj[k] === 'object') await walk(obj[k]);
+            const v = obj[k];
+            if (typeof v === 'string' && v.startsWith(REF_SCHEME)) {
+                targets.push({ obj, key: k, name: v.slice(REF_SCHEME.length) });
+            } else if (v && typeof v === 'object') {
+                walk(v);
+            }
         }
     };
-    await walk(record);
+    walk(record);
+    const names = [...new Set(targets.map(t => t.name))];
+
+    // Fetch with bounded concurrency so we don't fire hundreds of requests at once.
+    const resolved = new Map();
+    const CONCURRENCY = 8;
+    let i = 0;
+    async function worker() {
+        while (i < names.length) {
+            const name = names[i++];
+            const du = await fetchBlobDataUrl(base, id, name);
+            if (du) resolved.set(name, du);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, names.length) }, worker));
+
+    for (const t of targets) { const du = resolved.get(t.name); if (du) t.obj[t.key] = du; }
+    return record;
+}
+
+// Turn an image source (data URL, "appdisk://<name>" ref, or http URL) into a URL
+// the browser can load directly. Refs become the server's blob URL (immutable,
+// HTTP-cached). Returns null if a ref can't be resolved (no server).
+function blobUrlForRef(src) {
+    if (typeof src !== 'string' || !src) return null;
+    if (src.startsWith('data:') || /^https?:\/\//i.test(src)) return src;
+    if (src.startsWith(REF_SCHEME)) {
+        const base = RemoteStore.baseUrl();
+        if (!base) return null;
+        return base + '/projects/' + encodeURIComponent(currentProjectId) + '/blobs/' + src.slice(REF_SCHEME.length);
+    }
+    return src;
+}
+
+// Lazily decode a localized-image entry's bitmap (from the server blob URL or its
+// data URL), caching the Image on the entry. Returns the Image if already loaded,
+// else kicks off loading, returns null, and re-renders when it arrives. This is
+// what makes the app load "only what's shown" instead of every language up front.
+function ensureEntryImage(entry) {
+    if (!entry) return null;
+    if (entry.image) return entry.image;
+    if (entry._loading) return null;
+    const url = blobUrlForRef(entry.src);
+    if (!url) return null;
+    entry._loading = true;
+    const img = new Image();
+    img.decoding = 'async';
+    if (!url.startsWith('data:')) img.crossOrigin = 'anonymous'; // keep canvas export-clean
+    img.onload = () => {
+        entry.image = img;
+        entry._loading = false;
+        if (url.startsWith('data:')) { /* keep src */ }
+        updateCanvas();
+        try { updateSidePreviews(); } catch (e) {}
+    };
+    img.onerror = () => { entry._loading = false; };
+    img.src = url;
+    return null;
+}
+
+// Resolve only what the INITIAL render needs: each screenshot's background +
+// elements + legacy src + the CURRENT language's image. Other languages stay as
+// refs and load lazily (getScreenshotImage → ensureEntryImage) when selected.
+// Parallel + bounded. Mutates record.
+async function resolveProjectRefs(record, lang) {
+    if (!record || typeof record !== 'object') return record;
+    const base = RemoteStore.baseUrl();
+    if (!base) return record;
+    const id = encodeURIComponent(currentProjectId);
+    const targets = [];
+    const addRef = (obj, key) => {
+        const v = obj && obj[key];
+        if (typeof v === 'string' && v.startsWith(REF_SCHEME)) targets.push({ obj, key, name: v.slice(REF_SCHEME.length) });
+    };
+    const order = [lang, ...(record.projectLanguages || []), 'en'];
+    for (const s of record.screenshots || []) {
+        addRef(s, 'src'); // legacy single image
+        if (s.background) addRef(s.background, 'image');
+        for (const el of (s.elements || [])) { addRef(el, 'src'); addRef(el, 'image'); }
+        const li = s.localizedImages;
+        if (li) {
+            const isRefEntry = (l) => li[l] && typeof li[l].src === 'string' && li[l].src.startsWith(REF_SCHEME);
+            const pick = order.find(isRefEntry) || Object.keys(li).find(isRefEntry);
+            if (pick) addRef(li[pick], 'src');
+        }
+    }
+    const names = [...new Set(targets.map(t => t.name))];
+    const resolved = new Map();
+    const CONCURRENCY = 8;
+    let i = 0;
+    async function worker() {
+        while (i < names.length) {
+            const name = names[i++];
+            const du = await fetchBlobDataUrl(base, id, name);
+            if (du) resolved.set(name, du);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, names.length) }, worker));
+    for (const t of targets) { const du = resolved.get(t.name); if (du) t.obj[t.key] = du; }
     return record;
 }
 
@@ -2106,9 +2205,10 @@ function loadState() {
                 // server and (b) decode them, so nothing half-loaded is persisted.
                 setProjectLoading(!!(parsed && parsed.screenshots && parsed.screenshots.length));
                 if (parsed) {
-                    // Disk-only: replace "appdisk://" refs with data URLs fetched
-                    // from the server's blob store (browser HTTP-caches them).
-                    await resolveRefsInRecord(parsed);
+                    // Disk-only + fast load: resolve only the CURRENT language's
+                    // images (+ backgrounds/elements) now; other languages stay as
+                    // refs and load lazily on demand. Avoids fetching every language.
+                    await resolveProjectRefs(parsed, parsed.currentLanguage || state.currentLanguage || 'en');
                     // Check if this is an old-style project (no per-screenshot settings)
                     const isOldFormat = !parsed.defaults && (parsed.background || parsed.screenshot || parsed.text);
                     const hasScreenshotsWithoutSettings = parsed.screenshots?.some(s => !s.background && !s.screenshot && !s.text);
@@ -2210,19 +2310,26 @@ function loadState() {
 
                                 langKeys.forEach(lang => {
                                     const langData = s.localizedImages[lang];
-                                    if (langData?.src) {
+                                    const src = langData?.src;
+                                    if (src && src.startsWith(REF_SCHEME)) {
+                                        // Deferred ref (not the current language): keep the entry but
+                                        // DON'T decode now — it loads lazily on demand via
+                                        // getScreenshotImage(). This is the key to fast loading.
+                                        localizedImages[lang] = { image: null, src, name: langData.name || s.name };
+                                        langDone();
+                                    } else if (src) {
                                         const langImg = new Image();
                                         langImg.decoding = 'async';
                                         langImg.onload = () => {
-                                            localizedImages[lang] = { image: langImg, src: langData.src, name: langData.name || s.name };
+                                            localizedImages[lang] = { image: langImg, src, name: langData.name || s.name };
                                             langDone();
                                         };
                                         langImg.onerror = () => {
                                             // Preserve src even if the bitmap fails to decode.
-                                            localizedImages[lang] = { image: null, src: langData.src, name: langData.name || s.name };
+                                            localizedImages[lang] = { image: null, src, name: langData.name || s.name };
                                             langDone();
                                         };
-                                        langImg.src = langData.src;
+                                        langImg.src = src;
                                     } else {
                                         langDone();
                                     }
@@ -4387,6 +4494,9 @@ function setupEventListeners() {
 
             const zip = new JSZip();
             const recClone = JSON.parse(JSON.stringify(rec));
+            // Disk-only: the stored record holds "appdisk://" refs — pull the real
+            // image bytes back from the server (all languages) before archiving.
+            await resolveRefsInRecord(recClone);
             externalizeImages(recClone, zip, { seen: new Map(), n: 0 });
             const manifest = {
                 type: 'appscreen-project-backup',
@@ -9063,12 +9173,44 @@ function sliceCanvasToPanels(srcCanvas, span) {
     return urls;
 }
 
+// Make sure every screenshot's image for `lang` (with the same fallback order as
+// getScreenshotImage) is decoded before we render to an export canvas — images
+// load lazily now, so a fresh language may not be in memory yet.
+async function ensureLanguageImagesLoaded(lang) {
+    const jobs = [];
+    for (const s of state.screenshots) {
+        const li = s.localizedImages;
+        if (!li) continue;
+        let entry = li[lang] && li[lang].src ? li[lang] : null;
+        if (!entry) {
+            for (const l of [...state.projectLanguages, ...Object.keys(li)]) {
+                if (li[l]?.src) { entry = li[l]; break; }
+            }
+        }
+        if (entry && entry.src && !entry.image && !entry._loading) {
+            jobs.push(new Promise((res) => {
+                const url = blobUrlForRef(entry.src);
+                if (!url) return res();
+                const img = new Image();
+                img.decoding = 'async';
+                if (!url.startsWith('data:')) img.crossOrigin = 'anonymous';
+                img.onload = () => { entry.image = img; res(); };
+                img.onerror = () => res();
+                img.src = url;
+            }));
+        }
+    }
+    if (jobs.length) await Promise.all(jobs);
+}
+
 async function exportCurrent() {
     if (state.screenshots.length === 0) {
         await showAppAlert('Please upload a screenshot first', 'info');
         return;
     }
 
+    // Make sure the current language's images are decoded (lazy loading), then render.
+    await ensureLanguageImagesLoaded(state.currentLanguage);
     // Ensure canvas is up-to-date (especially important for 3D mode)
     updateCanvas();
 
@@ -9150,6 +9292,9 @@ async function exportAllForLanguage(lang) {
         s.text.currentHeadlineLang = lang;
         s.text.currentSubheadlineLang = lang;
     });
+
+    // Decode this language's images before rendering (lazy loading).
+    await ensureLanguageImagesLoaded(lang);
 
     let panelNum = 1; // running counter so panorama panels stay in order
     const pad = (n) => String(n).padStart(2, '0');
