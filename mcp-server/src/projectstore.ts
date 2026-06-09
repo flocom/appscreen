@@ -427,6 +427,46 @@ export function setScreenshotText(
   }
 }
 
+/**
+ * Set a screenshot's background (gradient or solid). `target` is a screenshot
+ * index, or "all" to apply the same background to every screenshot (the app's
+ * "Sync design to all screens"). Only the fields present in `patch` are changed;
+ * the rest of the background (overlay, noise, image-fit, …) is preserved.
+ * Returns the list of screenshot indices that were updated.
+ */
+export function setScreenshotBackground(
+  rec: ProjectRecord,
+  target: number | "all",
+  patch: {
+    type?: "gradient" | "solid" | "image";
+    gradient?: { angle: number; stops: { color: string; position: number }[] };
+    solid?: string;
+    overlayColor?: string;
+    overlayOpacity?: number;
+    noise?: boolean;
+    noiseIntensity?: number;
+  },
+): number[] {
+  const idxs = target === "all" ? rec.screenshots.map((_, i) => i) : [target];
+  if (idxs.length === 0) throw new Error("project has no screenshots");
+  const applied: number[] = [];
+  for (const i of idxs) {
+    const s = rec.screenshots[i];
+    if (!s) throw new Error(`no screenshot at index ${i}`);
+    if (!s.background) s.background = JSON.parse(JSON.stringify(defaultSettings().background));
+    const b = s.background;
+    if (patch.type) b.type = patch.type;
+    if (patch.gradient) b.gradient = patch.gradient;
+    if (patch.solid != null) b.solid = patch.solid;
+    if (patch.overlayColor != null) b.overlayColor = patch.overlayColor;
+    if (patch.overlayOpacity != null) b.overlayOpacity = patch.overlayOpacity;
+    if (patch.noise != null) b.noise = patch.noise;
+    if (patch.noiseIntensity != null) b.noiseIntensity = patch.noiseIntensity;
+    applied.push(i);
+  }
+  return applied;
+}
+
 /** Set the screenshot image for a given language (data URL). */
 export function setScreenshotImage(
   rec: ProjectRecord,
