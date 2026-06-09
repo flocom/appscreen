@@ -8,7 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import express from "express";
 import { writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { timingSafeEqual } from "node:crypto";
 import {
   OUTPUT_SIZES,
   OUTPUT_DEVICES,
@@ -38,7 +38,9 @@ import {
   getBlob,
   missingBlobs,
   gcBlobs,
+  readRev,
 } from "./projectstore.js";
+import { outputPathFor, OUTPUT_DIR } from "./security.js";
 
 // ---------- Zod schemas (shared by generate_screenshot and generate_batch) ----------
 
@@ -229,7 +231,9 @@ const renderShape = {
   outputPath: z
     .string()
     .optional()
-    .describe("If set, also write the PNG to this absolute file path (on the server)."),
+    .describe(
+      `If set, also write the PNG to this file path on the server, confined to ${OUTPUT_DIR} (override with MCP_OUTPUT_DIR). Relative paths resolve inside it.`,
+    ),
   deliver: z
     .enum(["inline", "url", "both"])
     .optional()
@@ -271,7 +275,7 @@ async function deliver(
 
   let savedTo: string | undefined;
   if (opts.outputPath) {
-    savedTo = resolve(opts.outputPath);
+    savedTo = await outputPathFor(opts.outputPath); // confined to MCP_OUTPUT_DIR
     await writeFile(savedTo, png);
   }
 
@@ -662,7 +666,7 @@ async function runHttp(port: number) {
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     res.header(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, Accept, mcp-session-id, mcp-protocol-version, last-event-id",
+      "Content-Type, Authorization, X-Auth-Token, Accept, mcp-session-id, mcp-protocol-version, last-event-id",
     );
     res.header("Access-Control-Expose-Headers", "mcp-session-id");
     res.header("Access-Control-Max-Age", "86400");
@@ -672,6 +676,41 @@ async function runHttp(port: number) {
     }
     next();
   });
+
+  // Optional shared-token auth (MCP_AUTH_TOKEN). When set, every endpoint —
+  // REST (projects, blobs, uploads, files) and the MCP endpoint — requires the
+  // token via "Authorization: Bearer <token>" or an "X-Auth-Token" header.
+  // GET /events (EventSource), GET /files/<id> (plain download links), and
+  // GET blob endpoints (<img src> loads) can't send headers, so they also
+  // accept "?token=". When unset, no auth (as before).
+  // /health stays open for container healthchecks. Preflights are answered by
+  // the CORS middleware above, before this runs.
+  const authToken = process.env.MCP_AUTH_TOKEN || "";
+  if (authToken) {
+    const expected = Buffer.from(authToken);
+    const matches = (t: unknown): boolean => {
+      if (typeof t !== "string" || !t) return false;
+      const got = Buffer.from(t);
+      return got.length === expected.length && timingSafeEqual(got, expected);
+    };
+    app.use((req, res, next) => {
+      if (/^\/(?:mcp\/)?health$/.test(req.path)) {
+        next();
+        return;
+      }
+      const auth = req.headers.authorization;
+      const bearer = typeof auth === "string" && auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
+      const queryOk =
+        req.method === "GET" &&
+        /\/(?:events|files\/[^/]+|projects\/[^/]+\/blobs\/[^/]+)$/.test(req.path) &&
+        matches(req.query.token);
+      if (matches(bearer) || matches(req.headers["x-auth-token"]) || queryOk) {
+        next();
+        return;
+      }
+      res.status(401).json({ error: "unauthorized" });
+    });
+  }
 
   // Public base URL used to build links. Prefer an explicit PUBLIC_BASE_URL
   // (correct behind proxies/tunnels); otherwise derive it from the request,
@@ -842,7 +881,17 @@ async function runHttp(port: number) {
           : undefined;
         // Serialize against concurrent MCP writes to the same project so the
         // rev-check read and the write can't interleave with another writer.
-        const saved = await withProjectLock(rec.id, () => saveProject(rec, { baseRev }));
+        const saved = await withProjectLock(rec.id, async () => {
+          // A rev-less PUT may only CREATE. When the project already exists, a
+          // full-document PUT without If-Match / body rev is a stale client
+          // that would silently clobber newer data (the web app always sends
+          // the rev for any project it pulled from the server) — reject it.
+          if (baseRev == null) {
+            const currentRev = await readRev(rec.id);
+            if (currentRev != null) throw new ConflictError(currentRev);
+          }
+          return saveProject(rec, { baseRev });
+        });
         res.json({ ok: true, id: saved.id, rev: saved.rev, updatedAt: saved.updatedAt });
       } catch (e: any) {
         if (e instanceof ConflictError) {

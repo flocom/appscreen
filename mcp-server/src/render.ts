@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import type { Gradient } from "./presets.js";
 import { OUTPUT_SIZES, getPresetGradient, parseGradient } from "./presets.js";
 import { getFile as getUploadedFile } from "./filestore.js";
+import { assertPublicUrl, imagePathFor } from "./security.js";
 
 // ----- Spec types -----
 
@@ -192,6 +193,7 @@ async function loadImageInput(input: string): Promise<Image> {
   }
   // 3) http(s) URL — the server fetches the image.
   if (/^https?:\/\//i.test(input)) {
+    await assertPublicUrl(input); // SSRF guard (see security.ts)
     const res = await fetch(input);
     if (!res.ok) throw new Error(`Failed to fetch image (HTTP ${res.status}): ${input}`);
     return loadImage(Buffer.from(await res.arrayBuffer()));
@@ -203,8 +205,8 @@ async function loadImageInput(input: string): Promise<Image> {
   if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR|Qk[01]|AAAA)/.test(compact)) {
     return loadImage(Buffer.from(compact, "base64"));
   }
-  // 5) Otherwise treat as a filesystem path (must exist on the server).
-  return loadImage(await readFile(input));
+  // 5) Otherwise treat as a filesystem path — confined to MCP_IMAGE_DIR.
+  return loadImage(await readFile(imagePathFor(input)));
 }
 
 const laurelCache = new Map<string, Image | null>();

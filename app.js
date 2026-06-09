@@ -411,8 +411,8 @@ async function getLucideImage(name, color, strokeWidth) {
     const blobURL = URL.createObjectURL(blob);
     return new Promise((resolve, reject) => {
         const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
+        img.onload = () => { URL.revokeObjectURL(blobURL); resolve(img); };
+        img.onerror = (e) => { URL.revokeObjectURL(blobURL); reject(e); };
         img.src = blobURL;
     });
 }
@@ -1328,7 +1328,6 @@ previewStrip.addEventListener('wheel', (e) => {
         swipeAccumulator = 0;
     }
 }, { passive: false });
-let suppressSwitchModelUpdate = false;  // Flag to suppress updateCanvas from switchPhoneModel
 const fileInput = document.getElementById('file-input');
 const screenshotList = document.getElementById('screenshot-list');
 const noScreenshot = document.getElementById('no-screenshot');
@@ -1554,38 +1553,42 @@ async function externalizeForUpload(record) {
     const seen = new Map();  // original dataUrl -> ref (avoid recompressing duplicates)
     const refs = new Map();  // original dataUrl -> blob name (committed to refCache on success)
 
-    const handle = async (val) => {
+    const handle = async (val, keepFormat) => {
         if (typeof val === 'string' && val.startsWith('data:image/')) {
-            if (seen.has(val)) return seen.get(val);
-            const compressed = await compressDataUrlToJpeg(val);
+            const seenKey = (keepFormat ? 'k:' : 'c:') + val;
+            if (seen.has(seenKey)) return seen.get(seenKey);
+            const compressed = keepFormat ? val : await compressDataUrlToJpeg(val);
             const { bytes, mime } = dataUrlToBytes(compressed);
             const hash = (await sha256Hex(bytes)).slice(0, 40);
             const ext = EXT_FROM_MIME[mime] || 'png';
             const name = hash + '.' + ext;
             if (!blobs.has(name)) blobs.set(name, { bytes, mime });
             const ref = REF_SCHEME + name;
-            seen.set(val, ref);
+            seen.set(seenKey, ref);
             refs.set(val, name);
             return ref;
         }
         return val;
     };
-    const walk = async (obj) => {
+    const walk = async (obj, keepFormat) => {
         if (Array.isArray(obj)) {
             for (let i = 0; i < obj.length; i++) {
-                const mapped = await handle(obj[i]);
+                const mapped = await handle(obj[i], keepFormat);
                 if (mapped !== obj[i]) obj[i] = mapped;
-                else if (obj[i] && typeof obj[i] === 'object') await walk(obj[i]);
+                else if (obj[i] && typeof obj[i] === 'object') await walk(obj[i], keepFormat);
             }
         } else if (obj && typeof obj === 'object') {
             for (const k of Object.keys(obj)) {
-                const mapped = await handle(obj[k]);
+                // Element/popout graphics can be transparent PNGs — never flatten
+                // them to JPEG. Only screenshots/backgrounds get compressed.
+                const childKeep = keepFormat || k === 'elements' || k === 'popouts';
+                const mapped = await handle(obj[k], childKeep);
                 if (mapped !== obj[k]) obj[k] = mapped;
-                else if (obj[k] && typeof obj[k] === 'object') await walk(obj[k]);
+                else if (obj[k] && typeof obj[k] === 'object') await walk(obj[k], childKeep);
             }
         }
     };
-    await walk(clone);
+    await walk(clone, false);
     return {
         record: clone,
         blobs: Array.from(blobs, ([name, v]) => ({ name, bytes: v.bytes, mime: v.mime })),
@@ -1688,7 +1691,10 @@ function blobUrlForRef(src) {
     if (src.startsWith(REF_SCHEME)) {
         const base = RemoteStore.baseUrl();
         if (!base) return null;
-        return base + '/projects/' + encodeURIComponent(currentProjectId) + '/blobs/' + src.slice(REF_SCHEME.length);
+        // <img> loads can't send headers — pass the auth token (if any) as a query param.
+        const token = localStorage.getItem('mcpServerToken');
+        return base + '/projects/' + encodeURIComponent(currentProjectId) + '/blobs/' + src.slice(REF_SCHEME.length)
+            + (token ? '?token=' + encodeURIComponent(token) : '');
     }
     return src;
 }
@@ -1939,7 +1945,7 @@ function setProjectLoading(v) {
     if (v) {
         // Safety net: never stay blocked if image loads never complete.
         clearTimeout(setProjectLoading._t);
-        setProjectLoading._t = setTimeout(() => { projectLoading = false; }, 8000);
+        setProjectLoading._t = setTimeout(() => { projectLoading = false; _reloadingFromServer = false; }, 8000);
     } else {
         clearTimeout(setProjectLoading._t);
     }
@@ -2095,8 +2101,16 @@ async function reloadProjectFromServer(id) {
             updateProjectSelector();
             updateCanvas();
             resetHistory(); // the project content was replaced from the server
-        } finally {
+            // If hydration is still running, leave the guard up: checkAllLoaded()
+            // clears it once images finish, so the freshly-downloaded data isn't
+            // echo-pushed straight back to the server.
+            if (!projectLoading) {
+                if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
+                _reloadingFromServer = false;
+            }
+        } catch (e) {
             _reloadingFromServer = false;
+            throw e;
         }
     } else {
         const p = projects.find(x => x.id === id);
@@ -2148,7 +2162,9 @@ function startRemoteEventStream() {
     if (_remoteEventSource) { try { _remoteEventSource.close(); } catch (e) {} _remoteEventSource = null; }
     if (!b) return;
     let es;
-    try { es = new EventSource(b + '/events'); }
+    // EventSource can't send headers — pass the auth token (if any) as a query param.
+    const token = localStorage.getItem('mcpServerToken');
+    try { es = new EventSource(b + '/events' + (token ? '?token=' + encodeURIComponent(token) : '')); }
     catch (e) { return; }
     _remoteEventSource = es;
 
@@ -2206,7 +2222,7 @@ function updateProjectSelector() {
             : '<span class="project-sync-badge local" title="Présent uniquement dans le cache du navigateur">cache local</span>';
 
         option.innerHTML = `
-            <span class="project-option-name">${project.name}</span>
+            <span class="project-option-name">${mcpEscapeHtml(project.name)}</span>
             <span class="project-option-right">
                 ${badge}
                 <span class="project-option-meta">${screenshotCount} screenshot${screenshotCount !== 1 ? 's' : ''}</span>
@@ -2312,8 +2328,25 @@ function cloneKeepingImages(obj) {
     return out;
 }
 
+// Transient lazy-load fields on localized-image entries (decoded bitmap, load
+// flags) must never enter history: they change from pure render events, and a
+// snapshot carrying `_loading: true` would block reloading forever after undo.
+function stripTransientImageFields(screenshots) {
+    for (const s of screenshots || []) {
+        const li = s && s.localizedImages;
+        if (!li) continue;
+        for (const lang of Object.keys(li)) {
+            const e = li[lang];
+            if (!e) continue;
+            delete e.image;
+            delete e._loading;
+            delete e._failedSrc;
+        }
+    }
+}
+
 function captureHistoryState() {
-    return cloneKeepingImages({
+    const snap = cloneKeepingImages({
         selectedIndex: state.selectedIndex,
         currentLanguage: state.currentLanguage,
         outputDevice: state.outputDevice,
@@ -2323,19 +2356,27 @@ function captureHistoryState() {
         defaults: state.defaults,
         screenshots: state.screenshots,
     });
+    stripTransientImageFields(snap.screenshots);
+    return snap;
 }
 
-// Cheap content fingerprint: image OBJECTS collapse to a marker, but their src
-// strings remain, so image swaps and every settings/text change are detected.
+// Cheap content fingerprint: image OBJECTS and transient lazy-load fields are
+// dropped, but src strings remain (collapsed to their length when huge), so
+// image swaps and every settings/text change are detected. Navigation-only
+// state (selected index, current language) is excluded on purpose.
 function historyFingerprint() {
     try {
         return JSON.stringify({
-            i: state.selectedIndex, l: state.currentLanguage, d: state.outputDevice,
+            d: state.outputDevice,
             w: state.customWidth, h: state.customHeight, langs: state.projectLanguages,
+            df: state.defaults,
             s: state.screenshots,
         }, (k, v) => {
-            if (typeof HTMLImageElement !== 'undefined' && v instanceof HTMLImageElement) return '#img';
-            if (typeof HTMLCanvasElement !== 'undefined' && v instanceof HTMLCanvasElement) return '#cv';
+            if (k === '_loading' || k === '_failedSrc') return undefined;
+            if (k === 'image' && v === null) return undefined;
+            if (typeof HTMLImageElement !== 'undefined' && v instanceof HTMLImageElement) return undefined;
+            if (typeof HTMLCanvasElement !== 'undefined' && v instanceof HTMLCanvasElement) return undefined;
+            if (typeof v === 'string' && ((v.length > 256 && v.startsWith('data:')) || v.length > 10240)) return 'len:' + v.length;
             return v;
         });
     } catch (e) { return String(Math.random()); }
@@ -2351,10 +2392,14 @@ function applyHistoryState(snap) {
     state.projectLanguages = s.projectLanguages;
     state.defaults = s.defaults;
     state.screenshots = s.screenshots;
-    // Keep the legacy single `image` field in sync with the current language.
+    // Snapshots strip decoded bitmaps from localized entries — re-trigger lazy
+    // resolution (off-screen languages stay deferred), and keep the legacy
+    // single `image` field in sync with the current language.
     state.screenshots.forEach(sc => {
-        const li = sc.localizedImages && sc.localizedImages[state.currentLanguage];
-        sc.image = (li && li.image) ? li.image : (sc.image || null);
+        const li = sc.localizedImages;
+        const cur = li && li[state.currentLanguage];
+        if (cur && cur.src && !cur.image) ensureEntryImage(cur);
+        sc.image = (cur && cur.image) ? cur.image : (sc.image || null);
     });
 
     _historySuspended = true;
@@ -2392,14 +2437,17 @@ function resetHistory() {
 // burst, holding the state from before the burst began.
 function recordHistoryDebounced() {
     if (_historySuspended) return;
+    if (projectLoading) return; // hydration in progress — baseline isn't real yet
     if (_committedSnapshot === null) { _committedSnapshot = captureHistoryState(); _committedFp = historyFingerprint(); }
     if (_historyBaseline === null) _historyBaseline = _committedSnapshot;
     if (_historyTimer) clearTimeout(_historyTimer);
     _historyTimer = setTimeout(commitHistory, HISTORY_DEBOUNCE_MS);
+    updateUndoRedoUI();
 }
 
 function commitHistory() {
     if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null; }
+    if (projectLoading) return; // hydration in progress — baseline isn't real yet
     if (_historyBaseline === null) return;
     const baseline = _historyBaseline;
     _historyBaseline = null;
@@ -2442,7 +2490,9 @@ function updateUndoRedoUI() {
 }
 
 // Keyboard: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z or Ctrl+Y = redo. Never hijack
-// undo while typing in a field (let the browser's native text undo work there).
+// undo while typing in a field (let the browser's native text undo work there)
+// — but range/color/checkbox inputs have no text undo, so allow it there. Also
+// stay out of the way while a modal is open.
 if (typeof window !== 'undefined') {
     window.addEventListener('keydown', (e) => {
         const key = (e.key || '').toLowerCase();
@@ -2450,7 +2500,12 @@ if (typeof window !== 'undefined') {
         if (!(e.metaKey || e.ctrlKey)) return;
         const t = document.activeElement;
         const tag = t && t.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+        if (tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+        if (tag === 'INPUT') {
+            const type = (t.type || 'text').toLowerCase();
+            if (['text', 'search', 'number', 'url', 'email', 'tel', 'password'].includes(type)) return;
+        }
+        if (document.querySelector('.modal-overlay.visible')) return;
         if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
         else if (key === 'z') { e.preventDefault(); undo(); }
     });
@@ -2532,7 +2587,13 @@ function saveState() {
     }
 
     // Mirror the save to the MCP server's disk (debounced; no-op if not configured).
-    scheduleRemotePush({ ...stateToSave, name: project ? project.name : currentProjectId });
+    // Deep-cloned NOW: the record is serialized 1.5s later, and live references
+    // would let edits made in the meantime leak into a payload claiming this rev.
+    try {
+        scheduleRemotePush(JSON.parse(JSON.stringify({ ...stateToSave, name: project ? project.name : currentProjectId })));
+    } catch (e) {
+        console.error('Error scheduling remote push:', e);
+    }
 
     // Record an undo step for this change (coalesced; skipped during undo/redo).
     recordHistoryDebounced();
@@ -2783,6 +2844,18 @@ function loadState() {
                                 syncUIWithState();
                                 updateGradientStopsUI();
                                 updateCanvas();
+                                if (_reloadingFromServer) {
+                                    // Hydration of the server's copy is done — drop the
+                                    // pending save it scheduled so the just-downloaded
+                                    // data isn't echo-pushed back to the server.
+                                    if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
+                                    _reloadingFromServer = false;
+                                }
+                                // Re-baseline undo history on the fully-hydrated state:
+                                // the resetHistory() callers run right after loadState()
+                                // resolves, BEFORE images populate state.screenshots, so
+                                // their baseline would capture an empty project.
+                                resetHistory();
                                 scheduleLanguagePrefetch(); // warm the next language in the background
 
                                 if (needsMigration && parsed.screenshots.length > 0) {
@@ -2959,9 +3032,10 @@ function resetStateToDefaults() {
 }
 
 // Switch to a different project
-async function switchProject(projectId) {
-    // Save current project first
-    saveState();
+async function switchProject(projectId, { skipSave = false } = {}) {
+    // Save current project first (skipped when it was just deleted — saving
+    // would resurrect it in IndexedDB and re-schedule a push to the server)
+    if (!skipSave) saveState();
 
     currentProjectId = projectId;
     saveProjectsMeta();
@@ -3004,26 +3078,39 @@ async function deleteProject() {
         return;
     }
 
+    const deletedId = currentProjectId;
+
     // Remove from projects list
-    const index = projects.findIndex(p => p.id === currentProjectId);
+    const index = projects.findIndex(p => p.id === deletedId);
     if (index > -1) {
         projects.splice(index, 1);
+    }
+
+    // Drop any pending (debounced) persistence of the deleted project so nothing
+    // can re-put it into IndexedDB or re-push it to the server after the delete.
+    if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
+    if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null; }
+    _historyBaseline = null;
+    const pendingPush = _remotePushPending.get(deletedId);
+    if (pendingPush) {
+        if (pendingPush.timer) clearTimeout(pendingPush.timer);
+        _remotePushPending.delete(deletedId);
     }
 
     // Delete from IndexedDB
     if (db) {
         const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
         const store = transaction.objectStore(PROJECTS_STORE);
-        store.delete(currentProjectId);
+        store.delete(deletedId);
     }
 
     // Delete on the server too (no-op if not configured).
-    RemoteStore.del(currentProjectId);
-    remoteProjectIds.delete(currentProjectId);
+    RemoteStore.del(deletedId);
+    remoteProjectIds.delete(deletedId);
 
-    // Switch to first available project
+    // Switch to first available project (without saving the deleted one)
     saveProjectsMeta();
-    await switchProject(projects[0].id);
+    await switchProject(projects[0].id, { skipSave: true });
     updateProjectSelector();
 }
 
@@ -3108,6 +3195,22 @@ function duplicateScreenshot(index) {
         img.src = original.image.src;
         clone.image = img;
     }
+
+    // Deep copy elements (reconstruct Image objects for graphics and icons)
+    clone.elements = (original.elements || []).map(el => {
+        const copy = JSON.parse(JSON.stringify({ ...el, image: undefined }));
+        if ((el.type === 'graphic' || el.type === 'icon') && el.image) {
+            copy.image = el.image;
+        }
+        copy.id = crypto.randomUUID();
+        return copy;
+    });
+
+    clone.popouts = (original.popouts || []).map(p => {
+        const copy = JSON.parse(JSON.stringify(p));
+        copy.id = crypto.randomUUID();
+        return copy;
+    });
 
     state.screenshots.splice(index + 1, 0, clone);
     state.selectedIndex = index + 1;
@@ -7429,7 +7532,7 @@ async function processDesktopImageFile(fileData) {
             if (existingIndex !== -1) {
                 // Found a screenshot with matching base filename
                 const existingScreenshot = state.screenshots[existingIndex];
-                const hasExistingLangImage = existingScreenshot.localizedImages?.[detectedLang]?.image;
+                const hasExistingLangImage = existingScreenshot.localizedImages?.[detectedLang]?.src;
 
                 if (hasExistingLangImage) {
                     // There's already an image for this language - show dialog
@@ -7494,7 +7597,7 @@ async function processImageFile(file) {
                 if (existingIndex !== -1) {
                     // Found a screenshot with matching base filename
                     const existingScreenshot = state.screenshots[existingIndex];
-                    const hasExistingLangImage = existingScreenshot.localizedImages?.[detectedLang]?.image;
+                    const hasExistingLangImage = existingScreenshot.localizedImages?.[detectedLang]?.src;
 
                     if (hasExistingLangImage) {
                         // There's already an image for this language - show dialog
@@ -7695,7 +7798,7 @@ function updateScreenshotList() {
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
                 </svg>
               </div>`
-            : `<img class="screenshot-thumb" src="${thumbSrc}" alt="${screenshot.name}">`;
+            : `<img class="screenshot-thumb" src="${thumbSrc}" alt="${mcpEscapeHtml(screenshot.name)}">`;
 
         item.innerHTML = `
             <div class="drag-handle">
@@ -7707,7 +7810,7 @@ function updateScreenshotList() {
             </div>
             ${thumbHtml}
             <div class="screenshot-info">
-                <div class="screenshot-name">${screenshot.name}</div>
+                <div class="screenshot-name">${mcpEscapeHtml(screenshot.name)}</div>
                 <div class="screenshot-device">${isTransferTarget ? 'Click source to copy style' : screenshot.deviceType}${langFlagsHtml}</div>
             </div>
             ${buttonsHtml}
@@ -8026,10 +8129,10 @@ function applyStyleToAll() {
         target.text.headlines = targetHeadlines;
         target.text.subheadlines = targetSubheadlines;
 
-        // Deep copy elements
+        // Deep copy elements (reconstruct Image objects for graphics and icons)
         target.elements = (source.elements || []).map(el => {
             const copy = JSON.parse(JSON.stringify({ ...el, image: undefined }));
-            if (el.type === 'graphic' && el.image) {
+            if ((el.type === 'graphic' || el.type === 'icon') && el.image) {
                 copy.image = el.image;
             }
             copy.id = crypto.randomUUID();
@@ -8053,17 +8156,23 @@ function replaceScreenshot(index) {
     const screenshot = state.screenshots[index];
     if (!screenshot) return;
 
-    // Create a hidden file input
+    // Create a hidden file input (removing any orphaned instance first)
+    const orphan = document.getElementById('replace-screenshot-input');
+    if (orphan) orphan.remove();
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
+    fileInput.id = 'replace-screenshot-input';
     fileInput.accept = 'image/*';
     fileInput.style.display = 'none';
     document.body.appendChild(fileInput);
 
+    // Clean up if the picker is dismissed without choosing a file
+    fileInput.addEventListener('cancel', () => fileInput.remove());
+
     fileInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) {
-            document.body.removeChild(fileInput);
+            fileInput.remove();
             return;
         }
 
@@ -8097,7 +8206,7 @@ function replaceScreenshot(index) {
         };
         reader.readAsDataURL(file);
 
-        document.body.removeChild(fileInput);
+        fileInput.remove();
     });
 
     // Trigger file dialog
@@ -8133,7 +8242,8 @@ function updateGradientStopsUI() {
 
         div.querySelector('input[type="number"]').addEventListener('input', (e) => {
             const currentBg = getBackground();
-            currentBg.gradient.stops[index].position = parseInt(e.target.value);
+            const pos = parseInt(e.target.value);
+            if (!Number.isNaN(pos)) currentBg.gradient.stops[index].position = pos;
             // Deselect preset when manually changing positions
             document.querySelectorAll('.preset-swatch').forEach(s => s.classList.remove('selected'));
             updateCanvas();
@@ -8357,7 +8467,7 @@ function slideToScreenshot(newIndex, direction) {
             if (index < 0 || index >= state.screenshots.length) return null;
             const tempCanvas = document.createElement('canvas');
             const tempCtx = tempCanvas.getContext('2d');
-            renderScreenshotToCanvas(index, tempCanvas, tempCtx, dims, previewScale);
+            renderScreenshotToCanvas(index, tempCanvas, tempCtx, getCanvasDimensions(index), previewScale);
             return { tempCanvas, targetCanvas };
         };
 
@@ -9783,6 +9893,10 @@ async function exportAllLanguages() {
             s.text.currentSubheadlineLang = lang;
         });
 
+        // Decode this language's images before rendering (lazy loading).
+        await ensureLanguageImagesLoaded(lang);
+
+        let panelNum = 1; // running counter so panorama panels stay in order
         for (let i = 0; i < state.screenshots.length; i++) {
             state.selectedIndex = i;
             updateCanvas();
@@ -9793,12 +9907,14 @@ async function exportAllLanguages() {
 
             await new Promise(resolve => setTimeout(resolve, 100));
 
-            // Get canvas data as base64, strip the data URL prefix
-            const dataUrl = canvas.toDataURL('image/png');
-            const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
-
-            // Use language code as folder name
-            zip.file(`${lang}/screenshot-${i + 1}.png`, base64Data, { base64: true });
+            // Slice into panels for panoramic screenshots (span > 1)
+            const span = (state.screenshots[i]?.screenshot?.spanScreens) || 1;
+            const panels = sliceCanvasToPanels(canvas, span);
+            panels.forEach((dataUrl) => {
+                const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+                // Use language code as folder name
+                zip.file(`${lang}/screenshot-${panelNum++}.png`, base64Data, { base64: true });
+            });
         }
     }
 

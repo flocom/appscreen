@@ -9,11 +9,12 @@
 // Both the MCP tools (for Claude) and the REST endpoints (for the web app)
 // read/write through the helpers here, so the two stay in sync.
 
-import { mkdir, readFile, readdir, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { getFile as getUploadedFile } from "./filestore.js";
+import { assertPublicUrl, imagePathFor } from "./security.js";
 
 // Fires after every persisted change so transports can push live updates (the
 // HTTP server relays these to browsers over SSE). "saved" → { id, rev };
@@ -83,9 +84,19 @@ export async function blobExists(name: string): Promise<boolean> {
 }
 export async function putBlob(name: string, buf: Buffer): Promise<void> {
   await ensureBlobsDir();
-  const p = join(BLOBS_DIR, safeBlobName(name));
+  const clean = safeBlobName(name);
+  // Blob names are content-addressed: the first 40 hex chars of the bytes'
+  // sha-256 (see externalizeForUpload in app.js and externalizeRecord below).
+  // Verify the name against the actual bytes so a client can't poison the
+  // global dedup store by uploading arbitrary bytes under another image's name.
+  const named = /^([0-9a-f]{40})\./.exec(clean);
+  const hash = createHash("sha256").update(buf).digest("hex").slice(0, 40);
+  if (!named || named[1] !== hash) {
+    throw new Error(`blob name does not match content hash (expected ${hash}.<ext>)`);
+  }
+  const p = join(BLOBS_DIR, clean);
   // Content-addressed → if it already exists the bytes are identical; skip rewrite.
-  if (!(await blobExists(name))) await writeFile(p, buf);
+  if (!(await blobExists(clean))) await writeFile(p, buf);
 }
 export async function getBlob(name: string): Promise<Buffer | null> {
   try { return await readFile(join(BLOBS_DIR, safeBlobName(name))); } catch { return null; }
@@ -132,7 +143,12 @@ export async function gcBlobs(opts: { graceMs?: number } = {}): Promise<GcResult
     const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json"));
     for (const f of files) {
       try { collectRefs(JSON.parse(await readFile(join(PROJECTS_DIR, f), "utf8")), referenced); }
-      catch { /* skip unreadable / non-project file */ }
+      catch (e) {
+        // An unreadable project may reference blobs we can't see — sweeping now
+        // could delete data that's still in use. Abort this entire GC run.
+        console.warn(`[appscreen-mcp] gc: cannot read/parse ${join(PROJECTS_DIR, f)} — aborting sweep:`, e);
+        return empty;
+      }
     }
     // Sweep: remove unreferenced blobs that are past the grace period.
     const res: GcResult = { deleted: 0, freedBytes: 0, kept: 0, skippedYoung: 0 };
@@ -257,8 +273,8 @@ export async function listProjects(): Promise<
         updatedAt: rec.updatedAt,
         rev: typeof rec.rev === "number" ? rec.rev : 0,
       });
-    } catch {
-      // skip unreadable / non-project files
+    } catch (e) {
+      console.warn(`[appscreen-mcp] skipping unreadable project file ${join(PROJECTS_DIR, f)}:`, e);
     }
   }
   out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
@@ -270,10 +286,19 @@ export async function getProject(
   opts: { inline?: boolean } = {},
 ): Promise<ProjectRecord | null> {
   await ensureDir();
+  const path = fileFor(id);
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") console.error(`[appscreen-mcp] failed to read project file ${path}:`, e);
+    return null;
+  }
   let rec: ProjectRecord;
   try {
-    rec = JSON.parse(await readFile(fileFor(id), "utf8")) as ProjectRecord;
-  } catch {
+    rec = JSON.parse(raw) as ProjectRecord;
+  } catch (e) {
+    console.error(`[appscreen-mcp] corrupt project JSON in ${path}:`, e);
     return null;
   }
   // inline=true rebuilds data URLs from the blob store (for the browser). Default
@@ -318,7 +343,7 @@ export async function mutateProject<T>(
 }
 
 /** Read just the stored revision of a project (0 if it exists without one, null if absent). */
-async function readRev(id: string): Promise<number | null> {
+export async function readRev(id: string): Promise<number | null> {
   try {
     const rec = JSON.parse(await readFile(fileFor(id), "utf8")) as ProjectRecord;
     return typeof rec.rev === "number" ? rec.rev : 0;
@@ -350,20 +375,32 @@ export async function saveProject(
   }
   rec.rev = (prevRev ?? 0) + 1;
   rec.updatedAt = new Date().toISOString();
-  await writeFile(fileFor(rec.id), JSON.stringify(rec));
+  // Atomic write (tmp + rename): a reader never sees partial JSON, and a crash
+  // mid-write can't truncate the project file. The ".json.tmp" suffix keeps tmp
+  // files invisible to listProjects/gcBlobs (they only pick up "*.json").
+  const final = fileFor(rec.id);
+  const tmp = `${final}.tmp`;
+  await writeFile(tmp, JSON.stringify(rec));
+  await rename(tmp, final);
   projectEvents.emit("saved", { id: rec.id, rev: rec.rev }); // live-update browsers via SSE
   return rec;
 }
 
 export async function deleteProject(id: string): Promise<boolean> {
   await ensureDir();
-  try {
-    await rm(fileFor(id));
-    projectEvents.emit("deleted", { id: safeId(id) });
-    return true;
-  } catch {
-    return false;
-  }
+  // Serialized with all other writers to this id, so a concurrent mutate can't
+  // resurrect the file mid-delete. The lock lives HERE and nowhere else for
+  // deletes: withProjectLock is a promise-chain mutex (not re-entrant), so
+  // callers must NOT wrap deleteProject in the same lock.
+  return withProjectLock(id, async () => {
+    try {
+      await rm(fileFor(id));
+      projectEvents.emit("deleted", { id: safeId(id) });
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 // ---------- Defaults for new projects / screenshots ----------
@@ -430,9 +467,13 @@ function defaultSettings() {
 }
 
 export async function createProject(name: string, id?: string): Promise<ProjectRecord> {
-  const newId = id || `project_${Date.now()}`;
-  if (await getProject(newId)) throw new Error(`project already exists: ${newId}`);
-  return saveProject(defaultRecord(newId, name || "Untitled Project"));
+  const newId = safeId(id || `project_${Date.now()}`);
+  // Exists-check + save under the project lock, so two concurrent creates with
+  // the same explicit id can't both pass the check.
+  return withProjectLock(newId, async () => {
+    if (await getProject(newId)) throw new Error(`project already exists: ${newId}`);
+    return saveProject(defaultRecord(newId, name || "Untitled Project"));
+  });
 }
 
 function newScreenshot(rec: ProjectRecord, name: string): any {
@@ -607,6 +648,7 @@ export async function resolveImageToDataUrl(input: string): Promise<string> {
     buf = f.buf;
     mime = f.mime;
   } else if (/^https?:\/\//i.test(input)) {
+    await assertPublicUrl(input); // SSRF guard (see security.ts)
     const res = await fetch(input);
     if (!res.ok) throw new Error(`Failed to fetch image (HTTP ${res.status}): ${input}`);
     buf = Buffer.from(await res.arrayBuffer());
@@ -616,7 +658,7 @@ export async function resolveImageToDataUrl(input: string): Promise<string> {
     if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR|Qk[01]|AAAA)/.test(compact)) {
       buf = Buffer.from(compact, "base64");
     } else {
-      buf = await readFile(input);
+      buf = await readFile(imagePathFor(input)); // confined to MCP_IMAGE_DIR
     }
   }
 
