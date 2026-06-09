@@ -1343,6 +1343,18 @@ const META_STORE = 'meta';
 let currentProjectId = 'default';
 let projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
 
+// Optimistic concurrency: the server revision the open project is based on. It's
+// set from each successful pull/push and sent back as the base rev, so the server
+// can reject (409) a stale tab's autosave instead of letting it overwrite newer
+// data — e.g. screenshots/text Claude (MCP) pushed while this tab sat idle. On a
+// 409 (or when the freshness check spots a newer server rev) we reload the
+// server's copy rather than clobber it. remoteRev caches the last-seen rev per id.
+let currentProjectRev = 0;
+const remoteRev = new Map();
+// True while we're reloading the server's newer copy into the editor, so saveState
+// doesn't echo that freshly-loaded data straight back out as a redundant push.
+let _reloadingFromServer = false;
+
 function openDatabase() {
     return new Promise((resolve, reject) => {
         try {
@@ -1800,7 +1812,10 @@ const RemoteStore = {
             // ?refs=1 → compact refs record (no inlined bytes). loadState resolves
             // the image blobs from the server on demand (disk-only).
             const r = await fetch(b + '/projects/' + encodeURIComponent(id) + '?refs=1', { headers: this._headers(false) });
-            return r.ok ? await r.json() : null;
+            if (!r.ok) return null;
+            const rec = await r.json();
+            if (rec && typeof rec.rev === 'number') remoteRev.set(id, rec.rev);
+            return rec;
         } catch (e) { return null; }
     },
     // Serialize all pushes so two uploads never run at once: otherwise their
@@ -1820,6 +1835,9 @@ const RemoteStore = {
         try {
             setSyncStatus('syncing', 'Préparation des images…');
             const { record: refRecord, blobs, refs } = await externalizeForUpload(record);
+            // Carry the base revision so the server can reject a stale overwrite.
+            const baseRev = typeof record.rev === 'number' ? record.rev : undefined;
+            if (baseRev != null) refRecord.rev = baseRev; else delete refRecord.rev;
 
             // Ask which image blobs the server still needs (dedup across pushes).
             let toUpload = blobs;
@@ -1850,13 +1868,31 @@ const RemoteStore = {
 
             // Finally PUT the tiny references-only project record.
             setSyncStatus('syncing', 'Enregistrement du projet…');
+            const headers = this._headers(true);
+            if (baseRev != null) headers['If-Match'] = String(baseRev);
             const r = await fetch(b + '/projects/' + id, {
-                method: 'PUT', headers: this._headers(true), body: JSON.stringify(refRecord)
+                method: 'PUT', headers, body: JSON.stringify(refRecord)
             });
+            if (r.status === 409) {
+                // The server has newer data than this tab was based on (e.g. Claude/MCP
+                // pushed while we were idle). Don't clobber it — reload the server copy.
+                setSyncStatus('syncing', 'Projet modifié ailleurs — rechargement…');
+                await reloadProjectFromServer(record.id);
+                setSyncStatus('ok', 'Rechargé (modifié par Claude/MCP)');
+                return false;
+            }
             if (r.ok) {
                 // Now confirmed on the server → these images can be stored as refs
                 // (bytes dropped from IndexedDB on the next save).
                 for (const [dataUrl, name] of refs) refCache.set(dataUrl, name);
+                // Adopt the new revision so our next push isn't seen as stale.
+                try {
+                    const j = await r.json();
+                    if (j && typeof j.rev === 'number') {
+                        remoteRev.set(record.id, j.rev);
+                        if (record.id === currentProjectId) currentProjectRev = j.rev;
+                    }
+                } catch (e) { /* response without body — ignore */ }
             }
             setSyncStatus(r.ok ? 'ok' : 'error', r.ok ? 'Enregistré sur le disque' : 'Échec de l’enregistrement (HTTP ' + r.status + ')');
             return r.ok;
@@ -1983,11 +2019,24 @@ async function syncWithRemote() {
         const local = await idbGetProject(sp.id);
         const localCount = local?.screenshots?.length || 0;
         const serverCount = serverCounts.get(sp.id) || 0;
+        const localRev = (local && typeof local.rev === 'number') ? local.rev : 0;
+        const serverRev = (typeof sp.rev === 'number') ? sp.rev : 0;
         let count = serverCount;
         if (!local) {
             // Not in this browser yet — pull it down.
             const rec = await RemoteStore.get(sp.id);
             if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
+        } else if (serverRev > localRev) {
+            // Server revision is newer (e.g. Claude/MCP wrote) → pull it down, even
+            // if the screenshot count is the same or lower. The rev is authoritative,
+            // so this can't be clobbered by the count heuristic below.
+            const rec = await RemoteStore.get(sp.id);
+            if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
+        } else if (localRev > serverRev) {
+            // This browser holds a newer revision than the server — push it up.
+            const meta = projects.find(p => p.id === sp.id);
+            await RemoteStore.put({ ...local, name: meta ? meta.name : sp.name });
+            count = localCount;
         } else if (localCount > serverCount) {
             // Local is richer — repair the server, keep local (no big download).
             const meta = projects.find(p => p.id === sp.id);
@@ -2013,6 +2062,69 @@ async function syncWithRemote() {
     remoteProjectIds = serverIds; // every id here now exists on the server's disk
     saveProjectsMeta();
     setSyncStatus('ok', 'Synchronisé');
+}
+
+// Pull a project fresh from the server and, if it's the open one, reload it into
+// the editor. Used when the server holds newer data than this tab (a 409 on push,
+// or the freshness poll spotting a higher rev) so we converge on the server's
+// version instead of overwriting it.
+async function reloadProjectFromServer(id) {
+    if (!RemoteStore.enabled() || !id) return false;
+    const rec = await RemoteStore.get(id); // also updates remoteRev[id]
+    if (!rec) return false;
+    await idbPutProject(rec); // refs record; loadState resolves blobs on demand
+    if (id === currentProjectId) {
+        _reloadingFromServer = true;
+        try {
+            currentProjectRev = (typeof rec.rev === 'number') ? rec.rev : 0;
+            resetStateToDefaults();
+            await loadState();
+            syncUIWithState();
+            updateScreenshotList();
+            updateGradientStopsUI();
+            updateProjectSelector();
+            updateCanvas();
+        } finally {
+            _reloadingFromServer = false;
+        }
+    } else {
+        const p = projects.find(x => x.id === id);
+        if (p) { p.screenshotCount = rec.screenshots?.length || 0; saveProjectsMeta(); updateProjectSelector(); }
+    }
+    return true;
+}
+
+// Detect when the server's copy of the OPEN project is newer than this tab's base
+// rev (e.g. Claude/MCP pushed screenshots while we sat idle) and reload it, so a
+// later autosave can't silently overwrite that newer data. Runs cheaply on window
+// focus / tab visibility and on a slow background poll.
+let _freshnessChecking = false;
+async function checkRemoteFreshness() {
+    if (_freshnessChecking || _reloadingFromServer) return;
+    if (!RemoteStore.enabled() || !currentProjectId) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (_remotePushPending.has(currentProjectId)) return; // a local edit is queued; let it push first
+    _freshnessChecking = true;
+    try {
+        const list = await RemoteStore.list();
+        if (!list) return;
+        const sp = list.find(p => p.id === currentProjectId);
+        if (!sp || typeof sp.rev !== 'number') return;
+        if (sp.rev > (currentProjectRev || 0)) {
+            await reloadProjectFromServer(currentProjectId);
+            setSyncStatus('ok', 'Rechargé (modifié par Claude/MCP)');
+        }
+    } catch (e) {
+        /* network blip — try again on the next focus/poll */
+    } finally {
+        _freshnessChecking = false;
+    }
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('focus', () => { checkRemoteFreshness(); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkRemoteFreshness(); });
+    setInterval(() => { checkRemoteFreshness(); }, 30000);
 }
 
 // Update project selector dropdown
@@ -2124,6 +2236,9 @@ function saveState() {
     // image loads finish populating state.screenshots, so a save here would write
     // an empty project to IndexedDB and push it to the server, destroying data.
     if (projectLoading) return;
+    // While reloading the server's newer copy into the editor, don't echo it back
+    // out as a save (it would be a redundant push of identical data).
+    if (_reloadingFromServer) return;
 
     // Convert screenshots to base64 for storage, including per-screenshot settings and localized images
     const screenshotsToSave = state.screenshots.map(s => {
@@ -2161,6 +2276,7 @@ function saveState() {
     const stateToSave = {
         id: currentProjectId,
         formatVersion: 2, // Version 2: new 3D positioning formula
+        rev: currentProjectRev, // base rev for optimistic concurrency on the server
         screenshots: screenshotsToSave,
         selectedIndex: state.selectedIndex,
         outputDevice: state.outputDevice,
@@ -2251,6 +2367,9 @@ function loadState() {
                 const isStale = () => myToken !== loadStateSeq;
                 if (isStale()) { resolve(); return; } // superseded before our IDB read returned
                 const parsed = request.result;
+                // Adopt the server revision this project is based on (0 if local-only
+                // or pre-rev), so the next push sends the correct base rev.
+                currentProjectRev = (parsed && typeof parsed.rev === 'number') ? parsed.rev : 0;
                 // Hold saves while we (a) pull disk-only image bytes from the
                 // server and (b) decode them, so nothing half-loaded is persisted.
                 setProjectLoading(!!(parsed && parsed.screenshots && parsed.screenshots.length));
