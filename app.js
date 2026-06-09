@@ -1516,6 +1516,14 @@ async function sha256Hex(bytes) {
 
 const EXT_FROM_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
 
+// data:URL -> blob name, but ONLY for images confirmed present on the server (set
+// after a successful upload, or after fetching from the server on load). Drives
+// "disk-only" persistence: such images are stored in IndexedDB as a tiny
+// "appdisk://<name>" ref instead of their bytes. Images NOT in here (not yet
+// uploaded) keep their bytes locally so nothing is lost offline.
+const refCache = new Map();
+const REF_SCHEME = 'appdisk://';
+
 // Externalize a project's images for upload: compress raster images to JPEG,
 // replace every inline data:image URL with a content-hash reference
 // ("appdisk://<sha>.<ext>"), and collect the unique image blobs to upload as
@@ -1526,6 +1534,7 @@ async function externalizeForUpload(record) {
     const clone = JSON.parse(JSON.stringify(record));
     const blobs = new Map(); // name -> { bytes, mime }
     const seen = new Map();  // original dataUrl -> ref (avoid recompressing duplicates)
+    const refs = new Map();  // original dataUrl -> blob name (committed to refCache on success)
 
     const handle = async (val) => {
         if (typeof val === 'string' && val.startsWith('data:image/')) {
@@ -1536,8 +1545,9 @@ async function externalizeForUpload(record) {
             const ext = EXT_FROM_MIME[mime] || 'png';
             const name = hash + '.' + ext;
             if (!blobs.has(name)) blobs.set(name, { bytes, mime });
-            const ref = 'appdisk://' + name;
+            const ref = REF_SCHEME + name;
             seen.set(val, ref);
+            refs.set(val, name);
             return ref;
         }
         return val;
@@ -1558,7 +1568,80 @@ async function externalizeForUpload(record) {
         }
     };
     await walk(clone);
-    return { record: clone, blobs: Array.from(blobs, ([name, v]) => ({ name, bytes: v.bytes, mime: v.mime })) };
+    return {
+        record: clone,
+        blobs: Array.from(blobs, ([name, v]) => ({ name, bytes: v.bytes, mime: v.mime })),
+        refs,
+    };
+}
+
+// Replace data:image URLs with "appdisk://<name>" refs for the images we KNOW are
+// on the server (refCache), so IndexedDB stores tiny refs instead of bytes. Deep
+// clones first so the in-memory state (which keeps data URLs for rendering) is
+// untouched. Images not yet on the server keep their bytes (safe offline).
+function refifyForIdb(record) {
+    const clone = JSON.parse(JSON.stringify(record));
+    const walk = (obj) => {
+        const keys = Array.isArray(obj) ? obj.map((_, i) => i) : Object.keys(obj);
+        for (const k of keys) {
+            const v = obj[k];
+            if (typeof v === 'string' && v.startsWith('data:image/') && refCache.has(v)) {
+                obj[k] = REF_SCHEME + refCache.get(v);
+            } else if (v && typeof v === 'object') {
+                walk(v);
+            }
+        }
+    };
+    if (clone && typeof clone === 'object') walk(clone);
+    return clone;
+}
+
+// Inverse, on load: replace "appdisk://<name>" refs with data URLs fetched from
+// the server's blob store (browser HTTP-caches them, content-addressed/immutable).
+// Failed fetches leave the ref (image just won't show — offline). Mutates record.
+async function resolveRefsInRecord(record) {
+    if (!record || typeof record !== 'object') return record;
+    const base = RemoteStore.baseUrl();
+    if (!base) return record; // no server reachable → can't resolve (offline)
+    const id = encodeURIComponent(currentProjectId);
+    const inflight = new Map(); // name -> Promise<dataUrl|null>
+    const fetchDataUrl = (name) => {
+        if (inflight.has(name)) return inflight.get(name);
+        const p = (async () => {
+            try {
+                const r = await fetch(base + '/projects/' + id + '/blobs/' + name, { headers: RemoteStore._headers(false) });
+                if (!r.ok) return null;
+                const blob = await r.blob();
+                return await new Promise((res) => {
+                    const fr = new FileReader();
+                    fr.onload = () => res(fr.result);
+                    fr.onerror = () => res(null);
+                    fr.readAsDataURL(blob);
+                });
+            } catch (e) { return null; }
+        })();
+        inflight.set(name, p);
+        return p;
+    };
+    const handle = async (v) => {
+        if (typeof v === 'string' && v.startsWith(REF_SCHEME)) {
+            const name = v.slice(REF_SCHEME.length);
+            const dataUrl = await fetchDataUrl(name);
+            if (dataUrl) { refCache.set(dataUrl, name); return dataUrl; }
+            return v;
+        }
+        return v;
+    };
+    const walk = async (obj) => {
+        const keys = Array.isArray(obj) ? obj.map((_, i) => i) : Object.keys(obj);
+        for (const k of keys) {
+            const mapped = await handle(obj[k]);
+            if (mapped !== obj[k]) obj[k] = mapped;
+            else if (obj[k] && typeof obj[k] === 'object') await walk(obj[k]);
+        }
+    };
+    await walk(record);
+    return record;
 }
 
 const RemoteStore = {
@@ -1592,7 +1675,9 @@ const RemoteStore = {
     async get(id) {
         const b = this.baseUrl(); if (!b) return null;
         try {
-            const r = await fetch(b + '/projects/' + encodeURIComponent(id), { headers: this._headers(false) });
+            // ?refs=1 → compact refs record (no inlined bytes). loadState resolves
+            // the image blobs from the server on demand (disk-only).
+            const r = await fetch(b + '/projects/' + encodeURIComponent(id) + '?refs=1', { headers: this._headers(false) });
             return r.ok ? await r.json() : null;
         } catch (e) { return null; }
     },
@@ -1601,7 +1686,7 @@ const RemoteStore = {
         const id = encodeURIComponent(record.id);
         try {
             setSyncStatus('syncing', 'Préparation des images…');
-            const { record: refRecord, blobs } = await externalizeForUpload(record);
+            const { record: refRecord, blobs, refs } = await externalizeForUpload(record);
 
             // Ask which image blobs the server still needs (dedup across pushes).
             let toUpload = blobs;
@@ -1635,6 +1720,11 @@ const RemoteStore = {
             const r = await fetch(b + '/projects/' + id, {
                 method: 'PUT', headers: this._headers(true), body: JSON.stringify(refRecord)
             });
+            if (r.ok) {
+                // Now confirmed on the server → these images can be stored as refs
+                // (bytes dropped from IndexedDB on the next save).
+                for (const [dataUrl, name] of refs) refCache.set(dataUrl, name);
+            }
             setSyncStatus(r.ok ? 'ok' : 'error', r.ok ? 'Enregistré sur le disque' : 'Échec de l’enregistrement (HTTP ' + r.status + ')');
             return r.ok;
         } catch (e) {
@@ -1948,7 +2038,9 @@ function saveState() {
     try {
         const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
         const store = transaction.objectStore(PROJECTS_STORE);
-        store.put(stateToSave);
+        // Disk-only: images already on the server are stored as tiny refs (not
+        // bytes), so IndexedDB stays small. Unpushed images keep their bytes.
+        store.put(refifyForIdb(stateToSave));
     } catch (e) {
         console.error('Error saving state:', e);
     }
@@ -2008,10 +2100,15 @@ function loadState() {
             const store = transaction.objectStore(PROJECTS_STORE);
             const request = store.get(currentProjectId);
 
-            request.onsuccess = () => {
+            request.onsuccess = async () => {
                 const parsed = request.result;
-                setProjectLoading(false);
+                // Hold saves while we (a) pull disk-only image bytes from the
+                // server and (b) decode them, so nothing half-loaded is persisted.
+                setProjectLoading(!!(parsed && parsed.screenshots && parsed.screenshots.length));
                 if (parsed) {
+                    // Disk-only: replace "appdisk://" refs with data URLs fetched
+                    // from the server's blob store (browser HTTP-caches them).
+                    await resolveRefsInRecord(parsed);
                     // Check if this is an old-style project (no per-screenshot settings)
                     const isOldFormat = !parsed.defaults && (parsed.background || parsed.screenshot || parsed.text);
                     const hasScreenshotsWithoutSettings = parsed.screenshots?.some(s => !s.background && !s.screenshot && !s.text);
