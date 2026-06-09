@@ -32,6 +32,10 @@ import {
   setScreenshotImage,
   setScreenshotText,
   setScreenshotBackground,
+  updateScreenshot,
+  updateProjectSettings,
+  removeScreenshot,
+  reorderScreenshots,
   resolveImageToDataUrl,
   summarizeProject,
   putBlob,
@@ -616,6 +620,119 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
           setScreenshotBackground(rec, all ? "all" : (index as number), patch),
         );
         return ok({ projectId, applied, count: applied.length, type: patch.type ?? "gradient" });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "update_screenshot",
+    {
+      title: "Update ANY screenshot parameter (generic patch)",
+      description:
+        "Deep-merge a patch into a screenshot — every parameter the web app exposes is reachable. " +
+        "Objects merge (only the fields you pass change); arrays and scalars replace. Use `all:true` to " +
+        "patch every screenshot. Sections & example fields:\n" +
+        "- screenshot (device placement): scale, x, y, rotation, perspective, cornerRadius, deviceModel2D " +
+        "('iphone'|'samsung'), bezelEnabled, spanScreens, use3D, device3D, rotation3D{x,y,z}, " +
+        "shadow{enabled,color,blur,opacity,x,y}, frame{enabled,color,width,opacity,notch}\n" +
+        "- text (styling/layout): headlineEnabled, headlineFont, headlineSize, headlineWeight, headlineColor, " +
+        "headlineItalic/Underline/Strikethrough, headlineBgColor, headlineBgOpacity, position ('top'|'bottom'), " +
+        "offsetY, lineHeight, subheadline* equivalents, subheadlineSpacing, subheadlineOpacity, perScreenText, " +
+        "panelHeadlines/panelSubheadlines, perLanguageLayout, languageSettings{<lang>:{...}} " +
+        "(for the TEXT CONTENT itself prefer set_screenshot_text)\n" +
+        "- background: type, gradient{angle,stops}, solid, image (any supported input form — resolved " +
+        "automatically), imageFit, imageBlur, overlayColor, overlayOpacity, noise, noiseIntensity\n" +
+        "- top-level: name, deviceType, elements (array, replaces), popouts (array, replaces)\n" +
+        "Inspect current values with get_project.",
+      inputSchema: {
+        projectId: z.string(),
+        index: z.number().int().min(0).optional().describe("Screenshot index (from get_project). Omit with all:true."),
+        all: z.boolean().optional().describe("Apply the patch to every screenshot."),
+        patch: z.record(z.any()).describe("Partial screenshot object to deep-merge, e.g. {screenshot:{scale:80,rotation:5},text:{headlineSize:90}}."),
+      },
+    },
+    async ({ projectId, index, all, patch }) => {
+      try {
+        if (index == null && !all) throw new Error("provide `index` or `all:true`");
+        // Resolve a background image given in any input form (upload ref, URL, path)
+        // outside the lock; data URLs are externalized to blobs on save.
+        if (patch?.background?.image && typeof patch.background.image === "string") {
+          patch.background.image = await resolveImageToDataUrl(patch.background.image);
+        }
+        const { result: applied } = await mutateProject(projectId, (rec) =>
+          updateScreenshot(rec, all ? "all" : (index as number), patch),
+        );
+        return ok({ projectId, applied, count: applied.length, patchedKeys: Object.keys(patch || {}) });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "update_project",
+    {
+      title: "Update ANY project-level setting (generic patch)",
+      description:
+        "Deep-merge a patch into the project's top-level settings. Fields: name, outputDevice " +
+        "(see list_output_sizes), customWidth, customHeight, currentLanguage, projectLanguages (array), " +
+        "selectedIndex, defaults (the template applied to NEW screenshots — same shape as a screenshot's " +
+        "background/screenshot/text sections). `id`, `rev` and `screenshots` are protected (use the " +
+        "screenshot tools for those).",
+      inputSchema: {
+        projectId: z.string(),
+        patch: z.record(z.any()).describe("Partial project object to deep-merge, e.g. {outputDevice:'ipad-13', projectLanguages:['en','fr','de']}."),
+      },
+    },
+    async ({ projectId, patch }) => {
+      try {
+        const { rec, result: applied } = await mutateProject(projectId, (rec) =>
+          updateProjectSettings(rec, patch),
+        );
+        return ok({ projectId, applied, name: rec.name, outputDevice: rec.outputDevice, languages: rec.projectLanguages });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "remove_screenshot",
+    {
+      title: "Remove a screenshot from a project",
+      description: "Delete the screenshot at `index`. Remaining screenshots shift down (re-check indices with get_project).",
+      inputSchema: {
+        projectId: z.string(),
+        index: z.number().int().min(0).describe("Screenshot index to remove (from get_project)."),
+      },
+    },
+    async ({ projectId, index }) => {
+      try {
+        const { result: remaining } = await mutateProject(projectId, (rec) => removeScreenshot(rec, index));
+        return ok({ projectId, removed: index, screenshotCount: remaining });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "reorder_screenshots",
+    {
+      title: "Reorder screenshots",
+      description: "Move the screenshot at `from` to position `to` (other screenshots shift).",
+      inputSchema: {
+        projectId: z.string(),
+        from: z.number().int().min(0).describe("Current index of the screenshot to move."),
+        to: z.number().int().min(0).describe("Destination index."),
+      },
+    },
+    async ({ projectId, from, to }) => {
+      try {
+        const { result: order } = await mutateProject(projectId, (rec) => reorderScreenshots(rec, from, to));
+        return ok({ projectId, order });
       } catch (e: any) {
         return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
       }
