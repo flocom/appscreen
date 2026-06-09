@@ -27,6 +27,7 @@ import {
   addScreenshot,
   setScreenshotImage,
   setScreenshotText,
+  setScreenshotBackground,
   resolveImageToDataUrl,
   summarizeProject,
   putBlob,
@@ -560,6 +561,56 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
         await saveProject(rec);
         const s = rec.screenshots[index];
         return ok({ projectId, index, headlines: s.text?.headlines, subheadlines: s.text?.subheadlines });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_screenshot_background",
+    {
+      title: "Set a screenshot's background (gradient or solid)",
+      description:
+        "Set the background of a screenshot in a project. Pass a `gradient` (angle + color stops), a named " +
+        "`preset`, or a `solid` hex color. Backgrounds are NOT per-language — one background per screenshot. " +
+        "Use `all:true` (or omit `index`) to apply the same background to every screenshot, like the app's " +
+        "\"Sync design to all screens\". Optional overlay/noise fields are merged in; other settings are kept.",
+      inputSchema: {
+        projectId: z.string(),
+        index: z.number().int().min(0).optional().describe("Screenshot index (from get_project). Omit with all:true to apply to every screenshot."),
+        all: z.boolean().optional().describe("Apply the same background to all screenshots."),
+        type: z.enum(["gradient", "solid"]).optional().describe("Background type. Inferred from gradient/solid when omitted."),
+        preset: z.string().optional().describe(`Named gradient preset. One of: ${GRADIENT_PRESET_NAMES.join(", ")}`),
+        gradient: z
+          .object({ angle: z.number(), stops: z.array(gradientStop).min(2) })
+          .optional()
+          .describe("Explicit gradient: angle in degrees + color stops [{color:'#30bdb4',position:0},…]."),
+        solid: z.string().optional().describe("Solid hex color, e.g. #1a1a2e (sets type=solid)."),
+        overlayColor: z.string().optional().describe("Optional overlay hex color."),
+        overlayOpacity: z.number().min(0).max(100).optional().describe("Overlay opacity 0-100."),
+        noise: z.boolean().optional().describe("Enable noise texture overlay."),
+        noiseIntensity: z.number().min(0).max(100).optional().describe("Noise intensity 0-100."),
+      },
+    },
+    async ({ projectId, index, all, type, preset, gradient, solid, overlayColor, overlayOpacity, noise, noiseIntensity }) => {
+      const rec = await getProject(projectId);
+      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
+      try {
+        if (index == null && !all) throw new Error("provide `index` (a screenshot) or `all:true`");
+        const patch: Parameters<typeof setScreenshotBackground>[2] = {};
+        if (solid != null) { patch.solid = solid; patch.type = type ?? "solid"; }
+        const g = gradient ?? (preset ? getPresetGradient(preset) : undefined);
+        if (g) { patch.gradient = g; patch.type = type ?? "gradient"; }
+        if (type && !patch.type) patch.type = type;
+        if (overlayColor != null) patch.overlayColor = overlayColor;
+        if (overlayOpacity != null) patch.overlayOpacity = overlayOpacity;
+        if (noise != null) patch.noise = noise;
+        if (noiseIntensity != null) patch.noiseIntensity = noiseIntensity;
+        if (Object.keys(patch).length === 0) throw new Error("nothing to set: pass preset, gradient, or solid");
+        const applied = setScreenshotBackground(rec, all ? "all" : (index as number), patch);
+        await saveProject(rec);
+        return ok({ projectId, applied, count: applied.length, type: patch.type ?? "gradient" });
       } catch (e: any) {
         return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
       }
