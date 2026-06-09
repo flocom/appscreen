@@ -22,6 +22,9 @@ import {
   listProjects,
   getProject,
   saveProject,
+  mutateProject,
+  withProjectLock,
+  projectEvents,
   ConflictError,
   deleteProject,
   createProject,
@@ -497,12 +500,16 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       },
     },
     async ({ projectId, name, image, language }) => {
-      const rec = await getProject(projectId);
-      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
-      const dataUrl = image ? await resolveImageToDataUrl(image) : undefined;
-      const index = addScreenshot(rec, { name, image: dataUrl, language });
-      await saveProject(rec);
-      return ok({ projectId, index, screenshotCount: rec.screenshots.length });
+      try {
+        // Resolve the image outside the lock (network/IO), then mutate atomically.
+        const dataUrl = image ? await resolveImageToDataUrl(image) : undefined;
+        const { rec, result: index } = await mutateProject(projectId, (rec) =>
+          addScreenshot(rec, { name, image: dataUrl, language }),
+        );
+        return ok({ projectId, index, screenshotCount: rec.screenshots.length });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
     },
   );
 
@@ -523,12 +530,11 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       },
     },
     async ({ projectId, index, image, language, name }) => {
-      const rec = await getProject(projectId);
-      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
       try {
-        const dataUrl = await resolveImageToDataUrl(image);
-        setScreenshotImage(rec, index, dataUrl, { language, name });
-        await saveProject(rec);
+        const dataUrl = await resolveImageToDataUrl(image); // outside the lock
+        const { rec } = await mutateProject(projectId, (rec) =>
+          setScreenshotImage(rec, index, dataUrl, { language, name }),
+        );
         return ok({ projectId, index, language: language || rec.currentLanguage || "en", set: true });
       } catch (e: any) {
         return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
@@ -555,11 +561,10 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       },
     },
     async ({ projectId, index, language, headline, subheadline, headlines, subheadlines }) => {
-      const rec = await getProject(projectId);
-      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
       try {
-        setScreenshotText(rec, index, { language, headline, subheadline, headlines, subheadlines });
-        await saveProject(rec);
+        const { rec } = await mutateProject(projectId, (rec) =>
+          setScreenshotText(rec, index, { language, headline, subheadline, headlines, subheadlines }),
+        );
         const s = rec.screenshots[index];
         return ok({ projectId, index, headlines: s.text?.headlines, subheadlines: s.text?.subheadlines });
       } catch (e: any) {
@@ -595,8 +600,6 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       },
     },
     async ({ projectId, index, all, type, preset, gradient, solid, overlayColor, overlayOpacity, noise, noiseIntensity }) => {
-      const rec = await getProject(projectId);
-      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
       try {
         if (index == null && !all) throw new Error("provide `index` (a screenshot) or `all:true`");
         const patch: Parameters<typeof setScreenshotBackground>[2] = {};
@@ -609,8 +612,9 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
         if (noise != null) patch.noise = noise;
         if (noiseIntensity != null) patch.noiseIntensity = noiseIntensity;
         if (Object.keys(patch).length === 0) throw new Error("nothing to set: pass preset, gradient, or solid");
-        const applied = setScreenshotBackground(rec, all ? "all" : (index as number), patch);
-        await saveProject(rec);
+        const { result: applied } = await mutateProject(projectId, (rec) =>
+          setScreenshotBackground(rec, all ? "all" : (index as number), patch),
+        );
         return ok({ projectId, applied, count: applied.length, type: patch.type ?? "gradient" });
       } catch (e: any) {
         return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
@@ -836,7 +840,9 @@ async function runHttp(port: number) {
           hdr != null && /^\d+$/.test(hdr) ? parseInt(hdr, 10)
           : typeof rec.rev === "number" ? rec.rev
           : undefined;
-        const saved = await saveProject(rec, { baseRev });
+        // Serialize against concurrent MCP writes to the same project so the
+        // rev-check read and the write can't interleave with another writer.
+        const saved = await withProjectLock(rec.id, () => saveProject(rec, { baseRev }));
         res.json({ ok: true, id: saved.id, rev: saved.rev, updatedAt: saved.updatedAt });
       } catch (e: any) {
         if (e instanceof ConflictError) {
@@ -856,6 +862,34 @@ async function runHttp(port: number) {
           .catch((e) => console.error("[appscreen-mcp] gc(after-delete) failed:", e));
       }
       res.json({ ok });
+    });
+
+    // Live updates: browsers subscribe here (EventSource) and get a "saved"/"deleted"
+    // event the instant any project changes — whether the change came from MCP
+    // (Claude) or another tab — so the UI updates without a manual refresh.
+    app.get(`${p}/events`, (req, res) => {
+      res.set({
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no", // disable proxy buffering (nginx) so events are instant
+      });
+      res.flushHeaders?.();
+      res.write("retry: 3000\n");
+      res.write("event: hello\ndata: {}\n\n");
+      const send = (type: string) => (payload: unknown) => {
+        try { res.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* client gone */ }
+      };
+      const onSaved = send("saved");
+      const onDeleted = send("deleted");
+      projectEvents.on("saved", onSaved);
+      projectEvents.on("deleted", onDeleted);
+      const keepAlive = setInterval(() => { try { res.write(": ka\n\n"); } catch { /* ignore */ } }, 25000);
+      req.on("close", () => {
+        clearInterval(keepAlive);
+        projectEvents.off("saved", onSaved);
+        projectEvents.off("deleted", onDeleted);
+      });
     });
 
     app.get(`${p}/health`, (_req, res) => res.json({ ok: true }));

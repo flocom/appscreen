@@ -12,7 +12,14 @@
 import { mkdir, readFile, readdir, writeFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { getFile as getUploadedFile } from "./filestore.js";
+
+// Fires after every persisted change so transports can push live updates (the
+// HTTP server relays these to browsers over SSE). "saved" → { id, rev };
+// "deleted" → { id }. Bumped to allow many SSE listeners without warnings.
+export const projectEvents = new EventEmitter();
+projectEvents.setMaxListeners(0);
 
 // ---------- Location on disk ----------
 
@@ -275,6 +282,41 @@ export async function getProject(
   return rec;
 }
 
+// Per-project async mutex. Concurrent MCP agents (the user runs several in
+// parallel) each do read-modify-write of the whole project document; without a
+// lock their writes clobber each other (lost updates). withProjectLock serializes
+// all writes to the SAME project id, while different projects still run fully in
+// parallel — so parallel imports are safe AND fast.
+const projectLocks = new Map<string, Promise<unknown>>();
+export function withProjectLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const key = safeId(id);
+  const prev = projectLocks.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn); // run after the previous holder, success or fail
+  const tail = run.then(() => {}, () => {});
+  projectLocks.set(key, tail);
+  // Drop the entry once we're the last in line, so the map doesn't grow forever.
+  tail.then(() => { if (projectLocks.get(key) === tail) projectLocks.delete(key); });
+  return run;
+}
+
+/**
+ * Atomic read-modify-write: load the project, run the mutator on it, and save —
+ * all under the project's lock, so parallel callers can't lose each other's
+ * changes. Returns the saved record and the mutator's result.
+ */
+export async function mutateProject<T>(
+  id: string,
+  mutator: (rec: ProjectRecord) => T | Promise<T>,
+): Promise<{ rec: ProjectRecord; result: T }> {
+  return withProjectLock(id, async () => {
+    const rec = await getProject(id);
+    if (!rec) throw new Error(`No project: ${id}`);
+    const result = await mutator(rec);
+    const saved = await saveProject(rec); // no baseRev: MCP wins, but serialized → no loss
+    return { rec: saved, result };
+  });
+}
+
 /** Read just the stored revision of a project (0 if it exists without one, null if absent). */
 async function readRev(id: string): Promise<number | null> {
   try {
@@ -309,6 +351,7 @@ export async function saveProject(
   rec.rev = (prevRev ?? 0) + 1;
   rec.updatedAt = new Date().toISOString();
   await writeFile(fileFor(rec.id), JSON.stringify(rec));
+  projectEvents.emit("saved", { id: rec.id, rev: rec.rev }); // live-update browsers via SSE
   return rec;
 }
 
@@ -316,6 +359,7 @@ export async function deleteProject(id: string): Promise<boolean> {
   await ensureDir();
   try {
     await rm(fileFor(id));
+    projectEvents.emit("deleted", { id: safeId(id) });
     return true;
   } catch {
     return false;

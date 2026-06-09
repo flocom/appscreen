@@ -1629,13 +1629,21 @@
 
             </div><!-- end sidebar-content -->
             <div class="sidebar-right-footer">
-                <button id="sync-design-all-btn" class="sync-design-btn" title="Copy this screenshot's background, device & text style to every screenshot">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
-                        <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
-                    </svg>
-                    Sync design to all screens
-                </button>
+                <div class="copy-design-controls">
+                    <label class="copy-design-label" for="copy-design-source">Dupliquer le design depuis</label>
+                    <select id="copy-design-source" class="copy-design-select" title="Choisir la vue source"></select>
+                    <label class="copy-design-checkbox">
+                        <input type="checkbox" id="copy-design-include-image">
+                        <span>Dupliquer aussi le screenshot</span>
+                    </label>
+                    <button id="copy-design-btn" class="sync-design-btn" title="Copier le design de la vue sélectionnée vers la vue affichée">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="9" width="11" height="11" rx="2"/>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                        Dupliquer le design
+                    </button>
+                </div>
             </div>
         </div>
     </div>

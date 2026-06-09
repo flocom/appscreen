@@ -1354,6 +1354,12 @@ const remoteRev = new Map();
 // True while we're reloading the server's newer copy into the editor, so saveState
 // doesn't echo that freshly-loaded data straight back out as a redundant push.
 let _reloadingFromServer = false;
+// True while a push to the server is actually in flight, so the live event stream
+// doesn't mistake our own save for a remote change and reload on top of it.
+let _remotePushInFlight = false;
+// The live update stream (Server-Sent Events). Lets MCP/Claude edits show up in
+// this tab instantly, with no manual refresh.
+let _remoteEventSource = null;
 
 function openDatabase() {
     return new Promise((resolve, reject) => {
@@ -1832,6 +1838,7 @@ const RemoteStore = {
     async _put(record) {
         const b = this.baseUrl(); if (!b || !record || !record.id) return false;
         const id = encodeURIComponent(record.id);
+        _remotePushInFlight = true;
         try {
             setSyncStatus('syncing', 'Préparation des images…');
             const { record: refRecord, blobs, refs } = await externalizeForUpload(record);
@@ -1900,6 +1907,8 @@ const RemoteStore = {
             console.warn('MCP project push failed:', e);
             setSyncStatus('error', 'Serveur injoignable');
             return false;
+        } finally {
+            _remotePushInFlight = false;
         }
     },
     async del(id) {
@@ -2062,6 +2071,7 @@ async function syncWithRemote() {
     remoteProjectIds = serverIds; // every id here now exists on the server's disk
     saveProjectsMeta();
     setSyncStatus('ok', 'Synchronisé');
+    startRemoteEventStream(); // (re)open the live update stream now the server is reachable
 }
 
 // Pull a project fresh from the server and, if it's the open one, reload it into
@@ -2125,6 +2135,47 @@ if (typeof window !== 'undefined') {
     window.addEventListener('focus', () => { checkRemoteFreshness(); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) checkRemoteFreshness(); });
     setInterval(() => { checkRemoteFreshness(); }, 30000);
+}
+
+// Subscribe to the server's live update stream (SSE). Any change — from Claude/MCP
+// or another tab — arrives here within milliseconds, so the open project reflects
+// it instantly without a manual refresh. EventSource auto-reconnects on drop; the
+// focus/visibility/poll checks above remain as a fallback if a proxy buffers SSE.
+function startRemoteEventStream() {
+    if (typeof EventSource === 'undefined') return;
+    const b = RemoteStore.enabled() ? RemoteStore.baseUrl() : null;
+    if (_remoteEventSource) { try { _remoteEventSource.close(); } catch (e) {} _remoteEventSource = null; }
+    if (!b) return;
+    let es;
+    try { es = new EventSource(b + '/events'); }
+    catch (e) { return; }
+    _remoteEventSource = es;
+
+    es.addEventListener('saved', (e) => {
+        let d; try { d = JSON.parse(e.data); } catch (err) { return; }
+        if (!d || !d.id) return;
+        if (typeof d.rev === 'number') remoteRev.set(d.id, d.rev);
+        if (d.id !== currentProjectId) return;
+        // Ignore our own save (in flight or queued) — the PUT response carries the
+        // authoritative rev; a real conflict is still caught by the 409 path.
+        if (_remotePushInFlight || _reloadingFromServer || _remotePushPending.has(d.id)) return;
+        if (typeof d.rev === 'number' && d.rev > (currentProjectRev || 0)) {
+            setSyncStatus('syncing', 'Mise à jour de Claude/MCP…');
+            reloadProjectFromServer(currentProjectId).then(() => {
+                setSyncStatus('ok', 'Mis à jour (Claude/MCP)');
+            });
+        }
+    });
+
+    es.addEventListener('deleted', (e) => {
+        let d; try { d = JSON.parse(e.data); } catch (err) { return; }
+        if (!d || !d.id) return;
+        remoteProjectIds.delete(d.id);
+        remoteRev.delete(d.id);
+        if (typeof updateProjectSelector === 'function') updateProjectSelector();
+    });
+
+    // On error EventSource reconnects on its own (honoring the server's retry hint).
 }
 
 // Update project selector dropdown
@@ -7694,6 +7745,9 @@ function updateScreenshotList() {
 
     // Update project selector to reflect current screenshot count
     updateProjectSelector();
+
+    // Keep the "duplicate design from…" source list in sync with the views.
+    if (typeof refreshCopyDesignSource === 'function') refreshCopyDesignSource();
 }
 
 function cancelTransfer() {
