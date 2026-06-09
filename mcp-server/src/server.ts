@@ -32,6 +32,7 @@ import {
   putBlob,
   getBlob,
   missingBlobs,
+  gcBlobs,
 } from "./projectstore.js";
 
 // ---------- Zod schemas (shared by generate_screenshot and generate_batch) ----------
@@ -783,7 +784,14 @@ async function runHttp(port: number) {
     });
 
     app.delete(`${p}/projects/:id`, async (req, res) => {
-      res.json({ ok: await deleteProject(req.params.id) });
+      const ok = await deleteProject(req.params.id);
+      // Reclaim any blobs the deleted project referenced (and nothing else does).
+      if (ok) {
+        gcBlobs()
+          .then((r) => { if (r.deleted) console.error(`[appscreen-mcp] gc(after-delete): removed ${r.deleted} blob(s), freed ${r.freedBytes} bytes`); })
+          .catch((e) => console.error("[appscreen-mcp] gc(after-delete) failed:", e));
+      }
+      res.json({ ok });
     });
 
     app.get(`${p}/health`, (_req, res) => res.json({ ok: true }));
@@ -793,6 +801,17 @@ async function runHttp(port: number) {
   app.listen(port, () => {
     console.error(`[appscreen-mcp] HTTP listening on http://localhost:${port}/mcp`);
   });
+
+  // Periodic garbage collection of orphaned image blobs (every 6h), plus one run
+  // shortly after startup. The grace period inside gcBlobs() protects blobs whose
+  // project record hasn't been written yet, so this is always safe to run.
+  const GC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  const runGc = (tag: string) =>
+    gcBlobs()
+      .then((r) => { if (r.deleted) console.error(`[appscreen-mcp] gc(${tag}): removed ${r.deleted} blob(s), freed ${r.freedBytes} bytes`); })
+      .catch((e) => console.error(`[appscreen-mcp] gc(${tag}) failed:`, e));
+  setTimeout(() => runGc("startup"), 5 * 60 * 1000); // 5 min after boot
+  setInterval(() => runGc("periodic"), GC_INTERVAL_MS).unref?.();
 }
 
 const useHttp =
