@@ -90,6 +90,66 @@ export async function missingBlobs(names: string[]): Promise<string[]> {
   return out;
 }
 
+// ---------- Garbage collection of orphaned blobs ----------
+// Blobs are content-addressed and shared across languages/screenshots/projects, so
+// they are never deleted inline (a blob a user "deletes" in one place may still be
+// referenced elsewhere). Instead, a mark-and-sweep reclaims blobs referenced by NO
+// project. A grace period protects freshly-uploaded blobs whose project record
+// hasn't been written yet (the upload→PUT window), so GC can run anytime safely.
+
+const GC_GRACE_MS = 60 * 60 * 1000; // 1h
+let gcRunning = false;
+
+function collectRefs(obj: any, out: Set<string>): void {
+  if (Array.isArray(obj)) {
+    for (const v of obj) collectRefs(v, out);
+  } else if (obj && typeof obj === "object") {
+    for (const k of Object.keys(obj)) collectRefs(obj[k], out);
+  } else if (typeof obj === "string" && obj.startsWith(REF_PREFIX)) {
+    out.add(obj.slice(REF_PREFIX.length));
+  }
+}
+
+export interface GcResult { deleted: number; freedBytes: number; kept: number; skippedYoung: number }
+
+/** Delete blobs referenced by no project (and older than the grace period). */
+export async function gcBlobs(opts: { graceMs?: number } = {}): Promise<GcResult> {
+  const empty: GcResult = { deleted: 0, freedBytes: 0, kept: 0, skippedYoung: 0 };
+  if (gcRunning) return empty; // never overlap two sweeps
+  gcRunning = true;
+  try {
+    await ensureDir();
+    await ensureBlobsDir();
+    // Mark: every blob name referenced by any project on disk.
+    const referenced = new Set<string>();
+    const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json"));
+    for (const f of files) {
+      try { collectRefs(JSON.parse(await readFile(join(PROJECTS_DIR, f), "utf8")), referenced); }
+      catch { /* skip unreadable / non-project file */ }
+    }
+    // Sweep: remove unreferenced blobs that are past the grace period.
+    const res: GcResult = { deleted: 0, freedBytes: 0, kept: 0, skippedYoung: 0 };
+    const now = Date.now();
+    const grace = opts.graceMs ?? GC_GRACE_MS;
+    let blobFiles: string[] = [];
+    try { blobFiles = await readdir(BLOBS_DIR); } catch { blobFiles = []; }
+    for (const name of blobFiles) {
+      if (referenced.has(name)) { res.kept++; continue; }
+      const full = join(BLOBS_DIR, name);
+      try {
+        const st = await stat(full);
+        if (now - st.mtimeMs < grace) { res.skippedYoung++; continue; } // may be mid-upload
+        await rm(full);
+        res.deleted++;
+        res.freedBytes += st.size;
+      } catch { /* file vanished or unreadable — ignore */ }
+    }
+    return res;
+  } finally {
+    gcRunning = false;
+  }
+}
+
 const isRef = (v: unknown): v is string => typeof v === "string" && v.startsWith(REF_PREFIX);
 
 async function walkStrings(obj: any, fn: (v: any) => Promise<any>): Promise<void> {
