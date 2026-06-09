@@ -1675,14 +1675,31 @@ function blobUrlForRef(src) {
     return src;
 }
 
+// Coalesce the re-renders triggered when several lazily-loaded images arrive at
+// once (e.g. on a language switch): batch them into a single repaint per frame.
+let _canvasRefreshQueued = false;
+function scheduleCanvasRefresh() {
+    if (_canvasRefreshQueued) return;
+    _canvasRefreshQueued = true;
+    const run = () => {
+        _canvasRefreshQueued = false;
+        updateCanvas();
+        try { updateSidePreviews(); } catch (e) {}
+    };
+    (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 16));
+}
+
 // Lazily decode a localized-image entry's bitmap (from the server blob URL or its
 // data URL), caching the Image on the entry. Returns the Image if already loaded,
 // else kicks off loading, returns null, and re-renders when it arrives. This is
 // what makes the app load "only what's shown" instead of every language up front.
-function ensureEntryImage(entry) {
+// `silent` skips the re-render (used when prefetching off-screen languages).
+function ensureEntryImage(entry, silent) {
     if (!entry) return null;
     if (entry.image) return entry.image;
-    if (entry._loading) return null;
+    // Don't retry a failed load on every render (getScreenshotImage runs each
+    // repaint — a 404/CORS failure would otherwise storm the server during a drag).
+    if (entry._loading || entry._failedSrc === entry.src) return null;
     const url = blobUrlForRef(entry.src);
     if (!url) return null;
     entry._loading = true;
@@ -1692,13 +1709,32 @@ function ensureEntryImage(entry) {
     img.onload = () => {
         entry.image = img;
         entry._loading = false;
-        if (url.startsWith('data:')) { /* keep src */ }
-        updateCanvas();
-        try { updateSidePreviews(); } catch (e) {}
+        entry._failedSrc = null;
+        if (!silent) scheduleCanvasRefresh();
     };
-    img.onerror = () => { entry._loading = false; };
+    img.onerror = () => { entry._loading = false; entry._failedSrc = entry.src; };
     img.src = url;
     return null;
+}
+
+// After the current language is shown, quietly pre-decode the NEXT language's
+// images in the background so switching to it is instant. Bounded to one language
+// (not all) to keep things light.
+let _prefetchTimer = null;
+function scheduleLanguagePrefetch() {
+    if (_prefetchTimer) clearTimeout(_prefetchTimer);
+    _prefetchTimer = setTimeout(() => {
+        _prefetchTimer = null;
+        const langs = state.projectLanguages || [];
+        if (langs.length < 2) return;
+        const idx = Math.max(0, langs.indexOf(state.currentLanguage));
+        const nextLang = langs[(idx + 1) % langs.length];
+        if (!nextLang || nextLang === state.currentLanguage) return;
+        for (const s of state.screenshots) {
+            const e = s.localizedImages && s.localizedImages[nextLang];
+            if (e && e.src && !e.image && !e._loading) ensureEntryImage(e, true /* silent */);
+        }
+    }, 1200);
 }
 
 // Resolve only what the INITIAL render needs: each screenshot's background +
@@ -2364,6 +2400,7 @@ function loadState() {
                                 syncUIWithState();
                                 updateGradientStopsUI();
                                 updateCanvas();
+                                scheduleLanguagePrefetch(); // warm the next language in the background
 
                                 if (needsMigration && parsed.screenshots.length > 0) {
                                     showMigrationPrompt();
