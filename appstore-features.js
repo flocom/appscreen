@@ -34,7 +34,7 @@ function addAllAppStoreLanguages() {
 
 // ---- Count screenshots that have an image for a language ----
 function countImagesForLanguage(lang) {
-    return state.screenshots.filter(s => s.localizedImages && s.localizedImages[lang] && s.localizedImages[lang].image).length;
+    return state.screenshots.filter(s => s.localizedImages && entryHasImage(s.localizedImages[lang])).length;
 }
 
 // ---- Assign one image File to a specific language (silent, batch-friendly) ----
@@ -44,7 +44,7 @@ function assignImageFileToLanguage(file, lang) {
         reader.onload = (e) => {
             const img = new Image();
             img.onload = () => {
-                const ratio = img.width / img.height;
+                const ratio = Math.min(img.width, img.height) / Math.max(img.width, img.height);
                 const deviceType = ratio > 0.6 ? 'iPad' : 'iPhone';
                 const idx = findScreenshotByBaseFilename(file.name);
                 if (idx !== -1) {
@@ -460,7 +460,7 @@ function renderAllLanguagesView() {
         row.appendChild(label);
 
         langs.forEach(lang => {
-            const hasImg = !!(ss.localizedImages && ss.localizedImages[lang] && ss.localizedImages[lang].image);
+            const hasImg = !!(ss.localizedImages && entryHasImage(ss.localizedImages[lang]));
             const cell = document.createElement('div');
             cell.className = 'alv-cell' + (hasImg ? '' : ' empty');
             cell.dataset.index = i;
@@ -478,7 +478,7 @@ function renderAllLanguagesView() {
             input.type = 'file'; input.accept = 'image/*'; input.hidden = true;
             cell.appendChild(input);
             cell.addEventListener('click', () => input.click());
-            input.addEventListener('change', () => { if (input.files[0]) assignFileToScreenshotLang(input.files[0], i, lang); });
+            input.addEventListener('change', () => { if (input.files[0]) assignFileToScreenshotLang(input.files[0], i, lang); input.value = ''; });
             ['dragenter', 'dragover'].forEach(ev => cell.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); cell.classList.add('dragover'); }));
             ['dragleave', 'dragend'].forEach(ev => cell.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); cell.classList.remove('dragover'); }));
             cell.addEventListener('drop', (e) => {
@@ -979,7 +979,7 @@ function ogLangsForScreenshot(ss) {
     ['headlines', 'subheadlines'].forEach(k => {
         if (ss.text && ss.text[k]) Object.keys(ss.text[k]).forEach(l => { if (ss.text[k][l]) set.add(l); });
     });
-    (state.languages || []).forEach(l => set.add(l));
+    (state.projectLanguages || []).forEach(l => set.add(l));
     if (!set.size) set.add(state.currentLanguage || 'en');
     return Array.from(set);
 }
@@ -1065,8 +1065,16 @@ function updateOverlapStatus() {
 
 initOverlapGuard();
 
+// Debounced overlap status refresh: ogOverlapLangs does a full offscreen render
+// per language, so don't run it on every syncUIWithState call.
+let _ogStatusTimer = null;
+function scheduleOverlapStatus() {
+    clearTimeout(_ogStatusTimer);
+    _ogStatusTimer = setTimeout(() => { try { updateOverlapStatus(); } catch (e) {} }, 300);
+}
+
 if (typeof syncUIWithState === 'function') {
     const _origSyncUIOG = syncUIWithState;
     // eslint-disable-next-line no-global-assign
-    syncUIWithState = function () { _origSyncUIOG.apply(this, arguments); try { updateOverlapStatus(); } catch (e) {} };
+    syncUIWithState = function () { _origSyncUIOG.apply(this, arguments); scheduleOverlapStatus(); };
 }

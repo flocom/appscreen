@@ -38,9 +38,15 @@ Open `http://localhost:8000` in browser. Opening `index.html` directly from file
 
 - `index.html` - UI structure with modals for settings, about, project management, translations, and language selection
 - `styles.css` - Dark theme styling, responsive layout with CSS Grid (3-column: left sidebar, canvas, right sidebar)
-- `app.js` - All application logic (~4400 lines)
-- `three-renderer.js` - Three.js 3D rendering for iPhone mockups (~1000 lines)
-- `language-utils.js` - Language detection, localized image management, and translation dialogs (~500 lines)
+- `app.js` - Core application logic (~10,000 lines): state, rendering, persistence, remote sync, undo/redo, exports
+- `three-renderer.js` - Three.js 3D rendering for iPhone mockups (~1,200 lines)
+- `language-utils.js` - Language detection, localized image management, and translation dialogs (~560 lines)
+- `appstore-features.js` - App Store-specific tooling: per-language overview matrix, overlap guard, CSV import/export (~1,100 lines)
+- `magical-titles.js` - AI-generated headline suggestions from screenshot images (~460 lines)
+- `llm.js` - Shared LLM provider config (Claude/OpenAI/Gemini endpoints, headers, key validation)
+- `lucide-icons.js`, `color-input.js`, `panel-resize.js`, `updater.js` - icon set, color input enhancement, resizable panels, Tauri auto-update
+- `mcp-server/` - optional Node/TypeScript MCP + REST server for shared project storage and server-side rendering
+- `src-tauri/` - Tauri desktop app wrapper
 
 **Key patterns in app.js:**
 
@@ -51,6 +57,7 @@ Open `http://localhost:8000` in browser. Opening `index.html` directly from file
 - Project management uses IndexedDB with two stores: `projects` (data) and `meta` (project list)
 - When an MCP server is configured (Settings → MCP Server), projects also persist to the **server's disk**, which becomes the shared source of truth: on startup/connect, `syncWithRemote()` migrates browser-only projects up to the server (`PUT /projects/:id`) and hydrates server projects back into IndexedDB; `saveState()` mirrors saves via `scheduleRemotePush()`. IndexedDB stays as the offline cache. `RemoteStore` is the REST client; heavy raster images (screenshots + background) are JPEG-compressed by `buildRemotePayload()` before upload. The server side lives in `mcp-server/src/projectstore.ts` with MCP tools + REST endpoints in `server.ts`.
 - Per-screenshot settings: each screenshot stores its own background, device, and text settings
+- Undo/redo: `captureHistoryState()`/`historyFingerprint()` snapshot serializable state (transient image fields excluded); `recordHistoryDebounced()` is driven by `saveState()`; `resetHistory()` re-baselines after a project finishes hydrating (`checkAllLoaded()`); Ctrl+Z / Ctrl+Shift+Z shortcuts skip text inputs and open modals
 
 **Canvas rendering pipeline (in updateCanvas):**
 1. `drawBackground()` - gradient/solid/image with optional blur and overlay

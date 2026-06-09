@@ -144,6 +144,17 @@ the container's port 3000. The key points are the same: real DNS record, HTTPS, 
 
 Lock down browser CORS in production with `MCP_CORS_ORIGIN` (e.g. `https://claude.ai`).
 
+## Security (env vars)
+
+| Variable | Effect |
+|----------|--------|
+| `MCP_AUTH_TOKEN` | When set, **every** REST + MCP endpoint (projects, blobs, uploads, files, `/mcp`) requires the token via `Authorization: Bearer <token>` or an `X-Auth-Token` header (the SSE `/events` stream and `/files/<id>` downloads also accept `?token=`, since those callers can't set headers). Unset → no auth, as before. The web app sends its Settings → MCP Server token as the Bearer token. `/health` stays open. |
+| `MCP_IMAGE_DIR` | Base directory that **path-form image inputs** may be read from (default: the server's working directory). Paths escaping it are rejected. The Docker composes set it to `/work`. |
+| `MCP_OUTPUT_DIR` | Base directory `outputPath` may write into (default `<projects dir>/outputs`; created if missing). Relative paths resolve inside it; escapes are rejected. The Docker composes set it to `/work`. |
+| `MCP_ALLOW_PRIVATE_URLS` | `true` to allow http(s) image fetches to private / loopback / link-local / metadata addresses (blocked by default to prevent SSRF). |
+
+Set `MCP_AUTH_TOKEN` whenever the server is reachable beyond localhost (LAN, tunnel, …).
+
 ## Tools
 
 | Tool | What it does |
