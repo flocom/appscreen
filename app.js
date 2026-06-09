@@ -1565,6 +1565,21 @@ const RemoteStore = {
 // the project dropdown). Empty when no server is configured or it's unreachable.
 let remoteProjectIds = new Set();
 
+// True while loadState() is still hydrating screenshots (images load async, after
+// the promise resolves). saveState() is suppressed during this window so the
+// transient empty state is never persisted to IndexedDB or pushed to the server.
+let projectLoading = false;
+function setProjectLoading(v) {
+    projectLoading = v;
+    if (v) {
+        // Safety net: never stay blocked if image loads never complete.
+        clearTimeout(setProjectLoading._t);
+        setProjectLoading._t = setTimeout(() => { projectLoading = false; }, 8000);
+    } else {
+        clearTimeout(setProjectLoading._t);
+    }
+}
+
 // Debounced push of the current project to the server (coalesces rapid edits).
 let _remotePushTimer = null;
 let _remotePushRecord = null;
@@ -1595,6 +1610,7 @@ async function syncWithRemote() {
         console.warn('MCP project sync: server unreachable — using local cache.');
         return;
     }
+    const serverCounts = new Map(serverList.map(p => [p.id, p.screenshotCount || 0]));
     const serverIds = new Set(serverList.map(p => p.id));
 
     // 1) Migrate any project that only exists in the browser cache.
@@ -1608,14 +1624,30 @@ async function syncWithRemote() {
         }
     }
 
-    // 2) Hydrate server projects down into IndexedDB + reconcile the project list.
+    // 2) Reconcile each server project with the local copy. CRITICAL: never let an
+    //    emptier server record clobber a richer local one — instead repair the
+    //    server from the local copy. This protects good data from a transient bad
+    //    (e.g. mid-load, empty) push that may have reached the server.
     const merged = projects.slice();
     for (const sp of serverList) {
-        const rec = await RemoteStore.get(sp.id);
-        if (rec) await idbPutProject(rec);
+        const local = await idbGetProject(sp.id);
+        const localCount = local?.screenshots?.length || 0;
+        const serverCount = serverCounts.get(sp.id) || 0;
+        let count = serverCount;
+        if (local && localCount > serverCount) {
+            const meta = projects.find(p => p.id === sp.id);
+            await RemoteStore.put({ ...local, name: meta ? meta.name : sp.name });
+            count = localCount; // keep the richer local copy as-is
+        } else {
+            const rec = await RemoteStore.get(sp.id);
+            if (rec && (rec.screenshots?.length || 0) >= localCount) {
+                await idbPutProject(rec);
+                count = rec.screenshots?.length || 0;
+            }
+        }
         const existing = merged.find(p => p.id === sp.id);
-        if (existing) { existing.name = sp.name; existing.screenshotCount = sp.screenshotCount; }
-        else merged.push({ id: sp.id, name: sp.name, screenshotCount: sp.screenshotCount });
+        if (existing) { existing.name = sp.name; existing.screenshotCount = count; }
+        else merged.push({ id: sp.id, name: sp.name, screenshotCount: count });
     }
     projects = merged;
     remoteProjectIds = serverIds; // every id here now exists on the server's disk
@@ -1718,6 +1750,10 @@ if (typeof window !== 'undefined') {
 function saveState() {
     if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
     if (!db) return;
+    // Don't persist a half-loaded project: loadState() resolves before its async
+    // image loads finish populating state.screenshots, so a save here would write
+    // an empty project to IndexedDB and push it to the server, destroying data.
+    if (projectLoading) return;
 
     // Convert screenshots to base64 for storage, including per-screenshot settings and localized images
     const screenshotsToSave = state.screenshots.map(s => {
@@ -1837,6 +1873,7 @@ function loadState() {
 
             request.onsuccess = () => {
                 const parsed = request.result;
+                setProjectLoading(false);
                 if (parsed) {
                     // Check if this is an old-style project (no per-screenshot settings)
                     const isOldFormat = !parsed.defaults && (parsed.background || parsed.screenshot || parsed.text);
@@ -1878,6 +1915,7 @@ function loadState() {
                     }
 
                     if (parsed.screenshots && parsed.screenshots.length > 0) {
+                        setProjectLoading(true); // block saves until images finish loading
                         let loadedCount = 0;
                         const totalToLoad = parsed.screenshots.length;
 
@@ -1996,6 +2034,7 @@ function loadState() {
 
                         function checkAllLoaded() {
                             if (loadedCount === totalToLoad) {
+                                setProjectLoading(false); // images loaded — saves allowed again
                                 updateScreenshotList();
                                 syncUIWithState();
                                 updateGradientStopsUI();
