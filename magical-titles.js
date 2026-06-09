@@ -38,9 +38,10 @@ function showMagicalTitlesTooltip() {
 
     btn.appendChild(tooltip);
 
-    // Auto-hide after 8 seconds
+    // Auto-hide after 8 seconds (without setting the permanent dismissed flag)
     setTimeout(() => {
-        dismissMagicalTitlesTooltip();
+        const t = document.getElementById('magical-titles-tooltip');
+        if (t) t.remove();
     }, 8000);
 }
 
@@ -88,6 +89,38 @@ function parseDataUrl(dataUrl) {
         mimeType: match[1],
         base64: match[2]
     };
+}
+
+/**
+ * Resolve an image source (data URL or ref:-scheme string) into { mimeType, base64 }
+ * @param {string} src - Data URL or ref: source
+ * @returns {Promise<Object|null>} - { mimeType, base64 } or null
+ */
+async function resolveImageData(src) {
+    if (!src) return null;
+
+    // Fast path: already a data URL
+    const parsed = parseDataUrl(src);
+    if (parsed) return parsed;
+
+    // ref:-scheme (MCP server) - resolve to a fetchable URL and convert
+    const url = typeof blobUrlForRef === 'function' ? blobUrlForRef(src) : null;
+    if (!url) return null;
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+        });
+        return parseDataUrl(dataUrl);
+    } catch (e) {
+        return null;
+    }
 }
 
 /**
@@ -297,17 +330,19 @@ async function generateMagicalTitles() {
     const sourceLang = langSelect.value || state.projectLanguages[0] || 'en';
     const langName = languageNames[sourceLang] || 'English';
 
-    // Collect images from all screenshots
-    const images = [];
-    for (const screenshot of state.screenshots) {
-        const dataUrl = getScreenshotDataUrl(screenshot, sourceLang);
+    // Collect images from all screenshots, keeping the original index of each
+    // so response keys can be mapped back even when some screenshots are skipped
+    const imageEntries = [];
+    for (let i = 0; i < state.screenshots.length; i++) {
+        const dataUrl = getScreenshotDataUrl(state.screenshots[i], sourceLang);
         if (dataUrl) {
-            const parsed = parseDataUrl(dataUrl);
+            const parsed = await resolveImageData(dataUrl);
             if (parsed) {
-                images.push(parsed);
+                imageEntries.push({ originalIndex: i, image: parsed });
             }
         }
     }
+    const images = imageEntries.map(entry => entry.image);
 
     if (images.length === 0) {
         await showAppAlert('No screenshot images found. Please upload some screenshots first.', 'error');
@@ -405,11 +440,12 @@ Write all titles in ${langName}.`;
 
         updateStatus('Applying titles...', 'Updating screenshots');
 
-        // Apply titles to screenshots
-        for (let i = 0; i < state.screenshots.length; i++) {
-            const titleData = titles[String(i)];
+        // Apply titles to screenshots, translating response keys (positions of
+        // the images that were sent) back to original screenshot indices
+        for (let p = 0; p < imageEntries.length; p++) {
+            const titleData = titles[String(p)];
             if (titleData) {
-                const screenshot = state.screenshots[i];
+                const screenshot = state.screenshots[imageEntries[p].originalIndex];
 
                 // Ensure text object exists with proper structure
                 if (!screenshot.text) {

@@ -92,9 +92,14 @@
             // eslint-disable-next-line no-global-assign
             syncUIWithState = function () { orig.apply(this, arguments); try { syncTextFields(); } catch (e) {} };
         }
-        // Catch dynamically-added color inputs (gradient stops, elements, popouts).
+        // Catch dynamically-added color inputs (gradient stops, elements, popouts),
+        // debounced so a burst of body mutations only triggers one scan.
         try {
-            const mo = new MutationObserver(() => enhanceAll());
+            let enhanceTimer = null;
+            const mo = new MutationObserver(() => {
+                clearTimeout(enhanceTimer);
+                enhanceTimer = setTimeout(enhanceAll, 100);
+            });
             mo.observe(document.body, { childList: true, subtree: true });
         } catch (e) {}
     }
