@@ -588,6 +588,91 @@ export function setScreenshotBackground(
   return applied;
 }
 
+/**
+ * Recursive merge: objects merge key-by-key, everything else (scalars, arrays,
+ * null) replaces. Mutates and returns `target` when it's a mergeable object.
+ */
+function deepMerge(target: any, patch: any): any {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const out = target && typeof target === "object" && !Array.isArray(target) ? target : {};
+  for (const k of Object.keys(patch)) {
+    const pv = patch[k];
+    if (pv && typeof pv === "object" && !Array.isArray(pv)) out[k] = deepMerge(out[k], pv);
+    else out[k] = pv;
+  }
+  return out;
+}
+
+/**
+ * Generic per-screenshot patch — can change ANY screenshot parameter (background,
+ * device placement under `screenshot`, text styling under `text`, `elements`,
+ * `popouts`, `name`, `deviceType`, …). `target` is an index or "all". Objects
+ * deep-merge (only the fields present change); arrays and scalars replace.
+ * Returns the updated indices.
+ */
+export function updateScreenshot(
+  rec: ProjectRecord,
+  target: number | "all",
+  patch: Record<string, any>,
+): number[] {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("patch must be an object");
+  const idxs = target === "all" ? rec.screenshots.map((_, i) => i) : [target];
+  if (idxs.length === 0) throw new Error("project has no screenshots");
+  const d = defaultSettings();
+  for (const i of idxs) {
+    const s = rec.screenshots[i];
+    if (!s) throw new Error(`no screenshot at index ${i}`);
+    // Seed missing sections from defaults so a partial patch lands on a full object.
+    for (const sect of ["background", "screenshot", "text"] as const) {
+      if (patch[sect] !== undefined && !s[sect]) s[sect] = JSON.parse(JSON.stringify((rec.defaults || d)[sect]));
+    }
+    deepMerge(s, patch);
+  }
+  return idxs;
+}
+
+// Top-level fields the generic project patch must never touch: identity/versioning
+// are server-managed, and screenshots have their own dedicated tools.
+const PROTECTED_PROJECT_KEYS = new Set(["id", "rev", "updatedAt", "screenshots"]);
+
+/**
+ * Generic project-level patch — name, outputDevice, customWidth/Height,
+ * currentLanguage, projectLanguages, selectedIndex, defaults, … Objects
+ * deep-merge; arrays and scalars replace. Returns the keys applied.
+ */
+export function updateProjectSettings(rec: ProjectRecord, patch: Record<string, any>): string[] {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("patch must be an object");
+  const applied: string[] = [];
+  for (const k of Object.keys(patch)) {
+    if (PROTECTED_PROJECT_KEYS.has(k)) continue;
+    const pv = patch[k];
+    if (pv && typeof pv === "object" && !Array.isArray(pv)) rec[k] = deepMerge(rec[k], pv);
+    else rec[k] = pv;
+    applied.push(k);
+  }
+  if (applied.length === 0) throw new Error("nothing to update (id/rev/screenshots are protected)");
+  return applied;
+}
+
+/** Remove a screenshot; keeps selectedIndex valid. Returns the remaining count. */
+export function removeScreenshot(rec: ProjectRecord, index: number): number {
+  if (!rec.screenshots[index]) throw new Error(`no screenshot at index ${index}`);
+  rec.screenshots.splice(index, 1);
+  const max = Math.max(0, rec.screenshots.length - 1);
+  if (typeof rec.selectedIndex === "number" && rec.selectedIndex > max) rec.selectedIndex = max;
+  return rec.screenshots.length;
+}
+
+/** Move a screenshot from one position to another. Returns the new order of names. */
+export function reorderScreenshots(rec: ProjectRecord, from: number, to: number): string[] {
+  const n = rec.screenshots.length;
+  if (from < 0 || from >= n) throw new Error(`no screenshot at index ${from}`);
+  if (to < 0 || to >= n) throw new Error(`target index ${to} out of range (0-${n - 1})`);
+  const [moved] = rec.screenshots.splice(from, 1);
+  rec.screenshots.splice(to, 0, moved);
+  return rec.screenshots.map((s, i) => s.name || `Screen ${i + 1}`);
+}
+
 /** Set the screenshot image for a given language (data URL). */
 export function setScreenshotImage(
   rec: ProjectRecord,
