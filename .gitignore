@@ -10,6 +10,10 @@
 # Node
 node_modules/
 
+# MCP server on-disk projects (user data)
+projects/
+mcp-server/projects/
+
 # Build output
 dist/
 out/

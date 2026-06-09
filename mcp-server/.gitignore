@@ -2,5 +2,6 @@ node_modules/
 dist/
 examples/out/
 work/
+projects/
 .env
 .env.*

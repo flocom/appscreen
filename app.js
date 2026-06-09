@@ -1433,6 +1433,182 @@ function saveProjectsMeta() {
     }
 }
 
+// ===== Remote project store: sync projects to the MCP server's disk =====
+// Projects are no longer kept only in the browser's IndexedDB cache. When an MCP
+// server is configured (Settings → MCP Server), the server's disk becomes the
+// shared source of truth: on startup we migrate any browser-only projects up to
+// the server and hydrate server projects back down into IndexedDB, and every
+// save is pushed to the server. IndexedDB stays as the offline cache/fallback.
+
+// Promise wrappers around the IndexedDB projects store (used by the sync layer).
+function idbGetProject(id) {
+    return new Promise((resolve) => {
+        if (!db) return resolve(null);
+        try {
+            const tx = db.transaction([PROJECTS_STORE], 'readonly');
+            const rq = tx.objectStore(PROJECTS_STORE).get(id);
+            rq.onsuccess = () => resolve(rq.result || null);
+            rq.onerror = () => resolve(null);
+        } catch (e) { resolve(null); }
+    });
+}
+function idbPutProject(rec) {
+    return new Promise((resolve) => {
+        if (!db || !rec || !rec.id) return resolve(false);
+        try {
+            const tx = db.transaction([PROJECTS_STORE], 'readwrite');
+            tx.objectStore(PROJECTS_STORE).put(rec);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => resolve(false);
+        } catch (e) { resolve(false); }
+    });
+}
+
+// Re-encode a (PNG/WebP) data URL to JPEG to save disk space before syncing.
+// Skips vector/animated formats and already-JPEG/non-data inputs, and keeps the
+// original if JPEG doesn't actually come out smaller. Alpha is flattened on white
+// (screenshots and background images are opaque), so we only ever compress those.
+function compressDataUrlToJpeg(dataUrl, quality = 0.85) {
+    return new Promise((resolve) => {
+        if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return resolve(dataUrl);
+        if (/^data:image\/(svg|gif|jpeg)/i.test(dataUrl)) return resolve(dataUrl);
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const c = document.createElement('canvas');
+                c.width = img.naturalWidth || img.width;
+                c.height = img.naturalHeight || img.height;
+                if (!c.width || !c.height) return resolve(dataUrl);
+                const ctx = c.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, c.width, c.height);
+                ctx.drawImage(img, 0, 0);
+                const out = c.toDataURL('image/jpeg', quality);
+                resolve(out && out.length < dataUrl.length ? out : dataUrl);
+            } catch (e) { resolve(dataUrl); }
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+    });
+}
+
+// Build the payload to send to the server: compress the heavy raster images
+// (per-language screenshots, legacy src, background image). Element icons/graphics
+// keep their original encoding to preserve transparency.
+async function buildRemotePayload(record) {
+    const clone = JSON.parse(JSON.stringify(record));
+    for (const s of clone.screenshots || []) {
+        if (typeof s.src === 'string') s.src = await compressDataUrlToJpeg(s.src);
+        if (s.localizedImages) {
+            for (const lang of Object.keys(s.localizedImages)) {
+                const li = s.localizedImages[lang];
+                if (li && typeof li.src === 'string') li.src = await compressDataUrlToJpeg(li.src);
+            }
+        }
+        if (s.background && typeof s.background.image === 'string') {
+            s.background.image = await compressDataUrlToJpeg(s.background.image);
+        }
+    }
+    return clone;
+}
+
+const RemoteStore = {
+    baseUrl() {
+        const url = localStorage.getItem('mcpServerUrl');
+        if (!url) return null;
+        return url.replace(/\/mcp\/?$/i, '').replace(/\/+$/, '');
+    },
+    enabled() { return !!this.baseUrl(); },
+    _headers(json) {
+        const h = json ? { 'Content-Type': 'application/json' } : {};
+        const t = localStorage.getItem('mcpServerToken');
+        if (t) h['Authorization'] = 'Bearer ' + t;
+        return h;
+    },
+    async list() {
+        const b = this.baseUrl(); if (!b) return null;
+        try {
+            const r = await fetch(b + '/projects', { headers: this._headers(false) });
+            return r.ok ? await r.json() : null;
+        } catch (e) { return null; }
+    },
+    async get(id) {
+        const b = this.baseUrl(); if (!b) return null;
+        try {
+            const r = await fetch(b + '/projects/' + encodeURIComponent(id), { headers: this._headers(false) });
+            return r.ok ? await r.json() : null;
+        } catch (e) { return null; }
+    },
+    async put(record) {
+        const b = this.baseUrl(); if (!b || !record || !record.id) return false;
+        try {
+            const payload = await buildRemotePayload(record);
+            const r = await fetch(b + '/projects/' + encodeURIComponent(record.id), {
+                method: 'PUT', headers: this._headers(true), body: JSON.stringify(payload)
+            });
+            return r.ok;
+        } catch (e) { console.warn('MCP project push failed:', e); return false; }
+    },
+    async del(id) {
+        const b = this.baseUrl(); if (!b) return false;
+        try {
+            const r = await fetch(b + '/projects/' + encodeURIComponent(id), { method: 'DELETE', headers: this._headers(false) });
+            return r.ok;
+        } catch (e) { return false; }
+    },
+};
+
+// Debounced push of the current project to the server (coalesces rapid edits).
+let _remotePushTimer = null;
+let _remotePushRecord = null;
+function scheduleRemotePush(record) {
+    if (!RemoteStore.enabled() || !record) return;
+    _remotePushRecord = record;
+    if (_remotePushTimer) clearTimeout(_remotePushTimer);
+    _remotePushTimer = setTimeout(() => {
+        _remotePushTimer = null;
+        const rec = _remotePushRecord;
+        _remotePushRecord = null;
+        if (rec) RemoteStore.put(rec);
+    }, 1500);
+}
+
+// Migrate browser-only projects up to the server, then hydrate server projects
+// back into IndexedDB. No-op (keeps local cache) when no server is configured or
+// the server is unreachable.
+async function syncWithRemote() {
+    if (!RemoteStore.enabled()) return;
+    const serverList = await RemoteStore.list();
+    if (serverList === null) {
+        console.warn('MCP project sync: server unreachable — using local cache.');
+        return;
+    }
+    const serverIds = new Set(serverList.map(p => p.id));
+
+    // 1) Migrate any project that only exists in the browser cache.
+    for (const p of projects) {
+        if (!serverIds.has(p.id)) {
+            const rec = await idbGetProject(p.id);
+            if (rec) {
+                const okPush = await RemoteStore.put({ ...rec, name: p.name });
+                if (okPush) serverIds.add(p.id);
+            }
+        }
+    }
+
+    // 2) Hydrate server projects down into IndexedDB + reconcile the project list.
+    const merged = projects.slice();
+    for (const sp of serverList) {
+        const rec = await RemoteStore.get(sp.id);
+        if (rec) await idbPutProject(rec);
+        const existing = merged.find(p => p.id === sp.id);
+        if (existing) { existing.name = sp.name; existing.screenshotCount = sp.screenshotCount; }
+        else merged.push({ id: sp.id, name: sp.name, screenshotCount: sp.screenshotCount });
+    }
+    projects = merged;
+    saveProjectsMeta();
+}
+
 // Update project selector dropdown
 function updateProjectSelector() {
     const menu = document.getElementById('project-menu');
@@ -1476,6 +1652,8 @@ async function init() {
     try {
         await openDatabase();
         await loadProjectsMeta();
+        await syncWithRemote(); // migrate browser-only projects to disk + hydrate server projects
+        updateProjectSelector();
         await loadState();
         syncUIWithState();
         updateCanvas();
@@ -1580,6 +1758,9 @@ function saveState() {
     } catch (e) {
         console.error('Error saving state:', e);
     }
+
+    // Mirror the save to the MCP server's disk (debounced; no-op if not configured).
+    scheduleRemotePush({ ...stateToSave, name: project ? project.name : currentProjectId });
 }
 
 // Migrate 3D positions from old formula to new formula
@@ -2029,6 +2210,9 @@ async function deleteProject() {
         const store = transaction.objectStore(PROJECTS_STORE);
         store.delete(currentProjectId);
     }
+
+    // Delete on the server too (no-op if not configured).
+    RemoteStore.del(currentProjectId);
 
     // Switch to first available project
     saveProjectsMeta();
@@ -6233,6 +6417,9 @@ async function connectMcpServer(url, token) {
         mcpState = { connected: true, tools, url, info };
         setMcpStatus('connected', `Connected to ${info} · ${tools.length} tools`);
         renderMcpTools(tools);
+        // Now that a server is connected, migrate local projects to disk and
+        // hydrate any server-side projects, then refresh the project list.
+        syncWithRemote().then(() => updateProjectSelector()).catch(() => {});
     } catch (e) {
         mcpState = { connected: false, tools: [], url, info: '' };
         let hint = String((e && e.message) || e);

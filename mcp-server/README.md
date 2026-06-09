@@ -152,6 +152,39 @@ Lock down browser CORS in production with `MCP_CORS_ORIGIN` (e.g. `https://claud
 | `list_gradient_presets` | The 25 built-in presets (name → CSS + parsed angle/stops). |
 | `generate_screenshot` | Render one screenshot → returns a PNG (and optionally writes `outputPath`). |
 | `generate_batch` | Render up to 50 screenshots in one call. |
+| `list_projects` | List the saved projects on the server's disk. |
+| `get_project` | Read a project (compact summary, or full record with `includeImages`). |
+| `create_project` / `delete_project` | Create or delete a project on disk. |
+| `add_screenshot` | Append a screenshot panel (optionally with an image). |
+| `set_screenshot_image` | Set a screenshot's image **for a given language**. |
+| `set_screenshot_text` | Set a screenshot's headline / subheadline, one locale or many at once. |
+
+## Projects (persisted on disk)
+
+Projects are stored on the **server's disk** — one JSON file per project under `PROJECTS_DIR`
+(default `./projects` next to where the server runs; override with `APPSCREEN_PROJECTS_DIR`).
+Each file is the exact record the [appscreen](../README.md) web app persists, so projects
+round-trip losslessly between the browser and the server.
+
+This makes the disk the **shared source of truth**: the appscreen web app (Settings → MCP Server)
+migrates its browser-only projects up to the server on connect and keeps them in sync, while the
+MCP tools above let an agent browse and edit those same projects.
+
+**Everything is per-language.** Screenshots keep a `localizedImages` map keyed by language code
+(`en`, `fr`, `de`, …) and the headline/subheadline are per-language maps too. So:
+
+- `set_screenshot_image` targets one `language` — call it once per locale to give a screenshot a
+  localized image.
+- `set_screenshot_text` takes either a single `headline`/`subheadline` + `language`, or a
+  `headlines`/`subheadlines` map to set many locales in one call, e.g.
+  `{"en":"Plan your trips","fr":"Planifiez vos voyages","de":"Planen Sie Ihre Reisen"}`.
+
+The web app talks to these over a small REST API (HTTP transport only): `GET /projects`,
+`GET /projects/:id`, `PUT /projects/:id` (create/overwrite — this is the migration path),
+`DELETE /projects/:id`. The MCP project tools work on both stdio and HTTP transports.
+
+> The web app compresses the heavy raster images (screenshots + background) to JPEG before
+> syncing, to save disk space; icons/graphics with transparency are left untouched.
 
 ### `generate_screenshot` input (abridged)
 
