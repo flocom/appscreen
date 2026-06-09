@@ -757,26 +757,103 @@ function initDeleteShortcut() {
     });
 }
 
-// "Sync design to all" — apply the current screenshot's background/device/text
-// style to every other screenshot (reuses the existing apply-style flow + modal).
-function initSyncDesignButton() {
-    const btn = document.getElementById('sync-design-all-btn');
-    if (!btn) return;
+// "Dupliquer le design depuis…" — pick another view and copy ITS design into the
+// view currently displayed (the reverse of the old "sync to all"). An optional
+// checkbox also copies the source's current-language screenshot image.
+// Repopulate the source dropdown with every view except the one on screen.
+function refreshCopyDesignSource() {
+    const sel = document.getElementById('copy-design-source');
+    if (!sel) return;
+    const controls = sel.closest('.copy-design-controls');
+    const btn = document.getElementById('copy-design-btn');
+    const shots = state.screenshots || [];
+    const cur = state.selectedIndex;
+    const others = shots.map((s, i) => ({ s, i })).filter(o => o.i !== cur);
+    const prev = sel.value;
+
+    sel.innerHTML = '';
+    if (others.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Aucune autre vue';
+        sel.appendChild(opt);
+        sel.disabled = true;
+        if (btn) btn.disabled = true;
+        if (controls) controls.classList.add('disabled');
+        return;
+    }
+    sel.disabled = false;
+    if (btn) btn.disabled = false;
+    if (controls) controls.classList.remove('disabled');
+
+    others.forEach(({ s, i }) => {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = (s.name && s.name.trim()) ? s.name : ('Vue ' + (i + 1));
+        sel.appendChild(opt);
+    });
+    // Keep the previous choice if it's still a valid "other" view.
+    if (prev !== '' && others.some(o => String(o.i) === prev)) sel.value = prev;
+}
+
+// Copy design (background / device / text styling / elements) from source → target,
+// and optionally the source's current-language screenshot image.
+function copyDesignFromView(sourceIndex, targetIndex, includeImage) {
+    const source = state.screenshots[sourceIndex];
+    const target = state.screenshots[targetIndex];
+    if (!source || !target) return;
+
+    // Reuse the existing deep-copy of background/device/text-style/elements; it
+    // preserves the target's own text content (only the styling is copied).
+    if (typeof transferStyle === 'function') {
+        transferStyle(sourceIndex, targetIndex);
+    }
+
+    if (includeImage) {
+        const lang = (state.currentLanguage) || 'en';
+        const srcImg = source.localizedImages && source.localizedImages[lang];
+        if (srcImg && srcImg.src) {
+            target.localizedImages = target.localizedImages || {};
+            target.localizedImages[lang] = { src: srcImg.src, name: srcImg.name, image: srcImg.image };
+            target.image = srcImg.image || target.image; // legacy single-image field
+            if (typeof syncUIWithState === 'function') syncUIWithState();
+            if (typeof updateScreenshotList === 'function') updateScreenshotList();
+            if (typeof updateCanvas === 'function') updateCanvas();
+        } else if (typeof showAppAlert === 'function') {
+            showAppAlert('La vue source n’a pas d’image pour cette langue — design copié sans le screenshot.', 'info');
+        }
+    }
+
+    refreshCopyDesignSource();
+}
+
+function initCopyDesignButton() {
+    const sel = document.getElementById('copy-design-source');
+    const btn = document.getElementById('copy-design-btn');
+    if (!sel || !btn) return;
+    // Always show fresh options when the dropdown is opened.
+    sel.addEventListener('mousedown', refreshCopyDesignSource);
     btn.addEventListener('click', () => {
-        if (state.screenshots.length < 2) {
-            if (typeof showAppAlert === 'function') showAppAlert('Add another screenshot first.', 'info');
+        const sourceIndex = parseInt(sel.value, 10);
+        const targetIndex = state.selectedIndex;
+        if (isNaN(sourceIndex) || sourceIndex === targetIndex) {
+            if (typeof showAppAlert === 'function') showAppAlert('Choisissez une autre vue comme source.', 'info');
             return;
         }
-        if (typeof showApplyStyleModal === 'function') showApplyStyleModal(state.selectedIndex);
+        const includeImage = !!(document.getElementById('copy-design-include-image') || {}).checked;
+        copyDesignFromView(sourceIndex, targetIndex, includeImage);
     });
+    refreshCopyDesignSource();
 }
+// Backwards-compatible name (kept in case other code references it).
+function initSyncDesignButton() { initCopyDesignButton(); }
 
 function initAllExtras() {
     initAppStoreFeatures();
     initCanvasViewToggle();
     initDeviceTextExtras();
     initDeleteShortcut();
-    initSyncDesignButton();
+    initCopyDesignButton();
     try { syncDeviceTextExtras(); } catch (e) {}
 }
 

@@ -4083,6 +4083,47 @@ input[id$="-hex"].color-invalid { border-color: #ff453a; }
 }
 .sync-design-btn:hover { border-color: var(--accent); color: var(--accent); }
 .sync-design-btn svg { flex-shrink: 0; }
+.sync-design-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.sync-design-btn:disabled:hover { border-color: var(--border-color); color: var(--text-primary); }
+
+/* Copy design from another view (right sidebar footer) */
+.copy-design-controls { display: flex; flex-direction: column; gap: 10px; }
+.copy-design-controls.disabled { opacity: 0.55; }
+.copy-design-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.copy-design-select {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+}
+.copy-design-select:focus { outline: none; border-color: var(--accent); }
+.copy-design-select:disabled { cursor: not-allowed; }
+.copy-design-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+.copy-design-checkbox input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    margin: 0;
+}
 
 /* Text/image overlap guard */
 .overlap-guard-box {

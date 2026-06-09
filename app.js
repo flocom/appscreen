@@ -7694,6 +7694,9 @@ function updateScreenshotList() {
 
     // Update project selector to reflect current screenshot count
     updateProjectSelector();
+
+    // Keep the "duplicate design from…" source list in sync with the views.
+    if (typeof refreshCopyDesignSource === 'function') refreshCopyDesignSource();
 }
 
 function cancelTransfer() {
