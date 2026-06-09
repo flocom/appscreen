@@ -1558,6 +1558,10 @@ const RemoteStore = {
     },
 };
 
+// Ids of projects known to live on the server's disk (drives the sync badge in
+// the project dropdown). Empty when no server is configured or it's unreachable.
+let remoteProjectIds = new Set();
+
 // Debounced push of the current project to the server (coalesces rapid edits).
 let _remotePushTimer = null;
 let _remotePushRecord = null;
@@ -1569,7 +1573,12 @@ function scheduleRemotePush(record) {
         _remotePushTimer = null;
         const rec = _remotePushRecord;
         _remotePushRecord = null;
-        if (rec) RemoteStore.put(rec);
+        if (rec) RemoteStore.put(rec).then(ok => {
+            if (ok && !remoteProjectIds.has(rec.id)) {
+                remoteProjectIds.add(rec.id);
+                updateProjectSelector(); // flip the badge to "✓ sur disque"
+            }
+        });
     }, 1500);
 }
 
@@ -1606,6 +1615,7 @@ async function syncWithRemote() {
         else merged.push({ id: sp.id, name: sp.name, screenshotCount: sp.screenshotCount });
     }
     projects = merged;
+    remoteProjectIds = serverIds; // every id here now exists on the server's disk
     saveProjectsMeta();
 }
 
@@ -1630,9 +1640,17 @@ function updateProjectSelector() {
 
         const screenshotCount = project.id === currentProjectId ? state.screenshots.length : (project.screenshotCount || 0);
 
+        const onDisk = remoteProjectIds.has(project.id);
+        const badge = onDisk
+            ? '<span class="project-sync-badge on-disk" title="Synchronisé sur le disque du serveur">✓ sur disque</span>'
+            : '<span class="project-sync-badge local" title="Présent uniquement dans le cache du navigateur">cache local</span>';
+
         option.innerHTML = `
             <span class="project-option-name">${project.name}</span>
-            <span class="project-option-meta">${screenshotCount} screenshot${screenshotCount !== 1 ? 's' : ''}</span>
+            <span class="project-option-right">
+                ${badge}
+                <span class="project-option-meta">${screenshotCount} screenshot${screenshotCount !== 1 ? 's' : ''}</span>
+            </span>
         `;
 
         option.addEventListener('click', (e) => {
@@ -2213,6 +2231,7 @@ async function deleteProject() {
 
     // Delete on the server too (no-op if not configured).
     RemoteStore.del(currentProjectId);
+    remoteProjectIds.delete(currentProjectId);
 
     // Switch to first available project
     saveProjectsMeta();
