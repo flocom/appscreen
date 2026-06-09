@@ -6,6 +6,9 @@ FROM nginx:alpine
 LABEL maintainer="App Store Screenshot Generator"
 LABEL description="Browser-based tool for creating App Store marketing screenshots"
 
+# htpasswd (apache2-utils) is used by the auth entrypoint to hash SITE_PASSWORD.
+RUN apk add --no-cache apache2-utils
+
 # Remove default nginx static assets
 RUN rm -rf /usr/share/nginx/html/*
 
@@ -31,6 +34,12 @@ COPY img/ /usr/share/nginx/html/img/
 
 # Copy custom nginx configuration for SPA and caching
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Optional HTTP Basic Auth. Default config = OFF so the image is valid before the
+# entrypoint runs; the entrypoint rewrites it from SITE_PASSWORD at container start.
+RUN echo 'auth_basic off;' > /etc/nginx/appscreen-auth.conf
+COPY docker/40-appscreen-auth.sh /docker-entrypoint.d/40-appscreen-auth.sh
+RUN chmod +x /docker-entrypoint.d/40-appscreen-auth.sh
 
 # Expose port 80
 EXPOSE 80

@@ -1842,9 +1842,6 @@ const RemoteStore = {
         try {
             setSyncStatus('syncing', 'Préparation des images…');
             const { record: refRecord, blobs, refs } = await externalizeForUpload(record);
-            // Carry the base revision so the server can reject a stale overwrite.
-            const baseRev = typeof record.rev === 'number' ? record.rev : undefined;
-            if (baseRev != null) refRecord.rev = baseRev; else delete refRecord.rev;
 
             // Ask which image blobs the server still needs (dedup across pushes).
             let toUpload = blobs;
@@ -1875,6 +1872,16 @@ const RemoteStore = {
 
             // Finally PUT the tiny references-only project record.
             setSyncStatus('syncing', 'Enregistrement du projet…');
+            // Base revision computed HERE, at send time — not when the save was
+            // scheduled. Pushes are serialized (_putChain), so by now any earlier
+            // push has resolved and currentProjectRev is up to date. Using the live
+            // rev avoids a stale base that would 409 against our OWN earlier push
+            // (the false "modifié ailleurs" when edits outrun the network).
+            const baseRev = (record.id === currentProjectId)
+                ? currentProjectRev
+                : (remoteRev.has(record.id) ? remoteRev.get(record.id)
+                   : (typeof record.rev === 'number' ? record.rev : undefined));
+            if (baseRev != null) refRecord.rev = baseRev; else delete refRecord.rev;
             const headers = this._headers(true);
             if (baseRev != null) headers['If-Match'] = String(baseRev);
             const r = await fetch(b + '/projects/' + id, {
@@ -1898,6 +1905,11 @@ const RemoteStore = {
                     if (j && typeof j.rev === 'number') {
                         remoteRev.set(record.id, j.rev);
                         if (record.id === currentProjectId) currentProjectRev = j.rev;
+                        // Persist the COMMITTED rev into IndexedDB. Without this the
+                        // cache keeps the pre-push base rev, so reopening the project
+                        // makes the freshness poll/SSE think the server is ahead and
+                        // falsely report "modifié ailleurs".
+                        persistCommittedRev(record.id, j.rev);
                     }
                 } catch (e) { /* response without body — ignore */ }
             }
@@ -1919,6 +1931,16 @@ const RemoteStore = {
         } catch (e) { return false; }
     },
 };
+
+// Persist the server-committed rev into the cached IndexedDB record (rev only),
+// so a later reload/switch restores the correct base rev and doesn't mistake our
+// own last push for a remote change.
+function persistCommittedRev(id, rev) {
+    if (!id || typeof rev !== 'number') return;
+    idbGetProject(id).then(rec => {
+        if (rec && rec.rev !== rev) { rec.rev = rev; idbPutProject(rec); }
+    }).catch(() => {});
+}
 
 // Ids of projects known to live on the server's disk (drives the sync badge in
 // the project dropdown). Empty when no server is configured or it's unreachable.

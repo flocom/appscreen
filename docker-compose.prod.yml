@@ -14,7 +14,10 @@
 #      and route the public hostname's paths in the Cloudflare dashboard:
 #        appscreen.agence-zen.com/mcp*  ->  http://appscreen-mcp:3000
 #        appscreen.agence-zen.com/*     ->  http://appscreen:80
-#   3) docker compose -f docker-compose.prod.yml --profile tunnel up -d
+#   3) (optional) protect the site with a password: add to the same .env file
+#        SITE_PASSWORD=your-password      (and optionally SITE_USER=youruser)
+#      Leaving it unset keeps the site open.
+#   4) docker compose -f docker-compose.prod.yml --profile tunnel up -d
 #
 # Projects are persisted on a host volume (./data/projects) so they survive
 # every redeploy.
@@ -27,6 +30,12 @@ services:
     restart: unless-stopped
     ports:
       - "8080:80"
+    environment:
+      # Site password (HTTP Basic Auth). Leave SITE_PASSWORD empty/unset to keep
+      # the site open. To protect it, put SITE_PASSWORD=yourpassword in a .env file
+      # next to this compose (optionally SITE_USER, default "admin"), then redeploy.
+      SITE_USER: ${SITE_USER:-admin}
+      SITE_PASSWORD: ${SITE_PASSWORD:-}
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     healthcheck:
