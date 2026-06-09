@@ -42,10 +42,19 @@ services:
     container_name: appscreen-mcp
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Loopback-only: cloudflared reaches this service over the compose network
+      # (http://appscreen-mcp:3000), not the host port. For LAN exposure, remove
+      # the "127.0.0.1:" prefix AND set MCP_AUTH_TOKEN.
+      - "127.0.0.1:3000:3000"
     environment:
       MCP_TRANSPORT: http
       PORT: "3000"
+      # Optional shared auth token. When set, all REST + MCP endpoints require
+      # "Authorization: Bearer <token>" (or X-Auth-Token; SSE/file downloads accept ?token=).
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      # Confine path-form image inputs and outputPath writes to the mounted /work.
+      MCP_IMAGE_DIR: /work
+      MCP_OUTPUT_DIR: /work
       # Persisted project store (mounted below) — survives redeploys.
       APPSCREEN_PROJECTS_DIR: /data/projects
       APPSCREEN_FONT_FAMILY: "DejaVu Sans"
