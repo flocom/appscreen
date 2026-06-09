@@ -2488,6 +2488,35 @@ input[type="range"]::-webkit-slider-thumb {
     white-space: nowrap;
 }
 
+.project-option-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.project-sync-badge {
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 999px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+
+.project-sync-badge.on-disk {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.12);
+    border-color: rgba(74, 222, 128, 0.3);
+}
+
+.project-sync-badge.local {
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border-color: var(--border-color, rgba(255, 255, 255, 0.1));
+}
+
 .project-buttons {
     display: flex;
     gap: 4px;
