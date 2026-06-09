@@ -1516,7 +1516,10 @@ const RemoteStore = {
     baseUrl() {
         const url = localStorage.getItem('mcpServerUrl');
         if (!url) return null;
-        return url.replace(/\/mcp\/?$/i, '').replace(/\/+$/, '');
+        // Keep the configured path (e.g. ".../mcp"): the server mounts the REST
+        // API under both "/" and "/mcp", and a reverse proxy may only forward
+        // "/mcp/*" to it. We just append "/projects" to whatever is configured.
+        return url.replace(/\/+$/, '');
     },
     enabled() { return !!this.baseUrl(); },
     _headers(json) {
