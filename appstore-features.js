@@ -744,6 +744,15 @@ function deleteSelectedScreenshot() {
 
 // Keyboard: Delete / Backspace removes the selected screenshot (unless typing
 // in a field or a modal is open).
+// Wire the undo/redo toolbar buttons to the history system in app.js.
+function initHistoryButtons() {
+    const u = document.getElementById('undo-btn');
+    const r = document.getElementById('redo-btn');
+    if (u) u.addEventListener('click', () => { if (typeof undo === 'function') undo(); });
+    if (r) r.addEventListener('click', () => { if (typeof redo === 'function') redo(); });
+    if (typeof updateUndoRedoUI === 'function') updateUndoRedoUI();
+}
+
 function initDeleteShortcut() {
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Delete' && e.key !== 'Backspace') return;
@@ -854,6 +863,7 @@ function initAllExtras() {
     initDeviceTextExtras();
     initDeleteShortcut();
     initCopyDesignButton();
+    initHistoryButtons();
     try { syncDeviceTextExtras(); } catch (e) {}
 }
 

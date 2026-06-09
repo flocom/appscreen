@@ -3932,6 +3932,35 @@ input[type="range"]::-webkit-slider-thumb {
     color: #fff;
 }
 
+/* Undo / redo toolbar (top-left of the canvas area) */
+.history-controls {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    display: flex;
+    gap: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 3px;
+    z-index: 5;
+}
+.history-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.history-btn:hover:not(:disabled) { background: var(--bg-secondary); color: var(--text-primary); }
+.history-btn:disabled { opacity: 0.35; cursor: default; }
+
 /* All-languages = matrix: rows = screenshots, columns = languages */
 .all-languages-view {
     display: flex;

@@ -314,6 +314,18 @@
 
         <!-- Main Canvas Area -->
         <div class="canvas-area">
+            <div class="history-controls">
+                <button id="undo-btn" class="history-btn" title="Annuler (Ctrl/Cmd+Z)" disabled>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 5 5v0a5 5 0 0 1-5 5H9"/>
+                    </svg>
+                </button>
+                <button id="redo-btn" class="history-btn" title="Rétablir (Ctrl/Cmd+Shift+Z)" disabled>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0-5 5v0a5 5 0 0 0 5 5h6"/>
+                    </svg>
+                </button>
+            </div>
             <div class="canvas-view-toggle" id="canvas-view-toggle">
                 <button data-view="single" class="active">Single</button>
                 <button data-view="all-languages">All languages</button>
