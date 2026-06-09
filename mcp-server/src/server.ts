@@ -29,6 +29,8 @@ import {
   setScreenshotText,
   resolveImageToDataUrl,
   summarizeProject,
+  putBlob,
+  missingBlobs,
 } from "./projectstore.js";
 
 // ---------- Zod schemas (shared by generate_screenshot and generate_batch) ----------
@@ -440,7 +442,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       },
     },
     async ({ id, includeImages }) => {
-      const rec = await getProject(id);
+      const rec = await getProject(id, { inline: !!includeImages });
       if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${id}` }] };
       return ok(includeImages ? rec : summarizeProject(rec));
     },
@@ -657,6 +659,25 @@ async function runHttp(port: number) {
     app.post(`${p}/upload`, express.raw({ type: "*/*", limit: "50mb" }), uploadHandler);
   }
 
+  // Binary image-blob upload for the project store (content-addressed by name).
+  // Raw bytes (no base64) so it stays small and fast; must precede express.json.
+  const blobUploadHandler = async (req: express.Request, res: express.Response) => {
+    try {
+      const buf = req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length === 0) {
+        res.status(400).json({ error: "empty body — PUT the raw image bytes" });
+        return;
+      }
+      await putBlob(req.params.name, buf);
+      res.json({ ok: true, name: req.params.name, bytes: buf.length });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message ?? e) });
+    }
+  };
+  for (const p of HTTP_PREFIXES) {
+    app.put(`${p}/projects/:id/blobs/:name`, express.raw({ type: "*/*", limit: "60mb" }), blobUploadHandler);
+  }
+
   app.use(express.json({ limit: "50mb" }));
 
   // Stateless: a fresh server+transport per request (simple and robust).
@@ -704,7 +725,8 @@ async function runHttp(port: number) {
     });
 
     app.get(`${p}/projects/:id`, async (req, res) => {
-      const rec = await getProject(req.params.id);
+      // inline=true rebuilds data URLs from the blob store for the browser.
+      const rec = await getProject(req.params.id, { inline: true });
       if (!rec) {
         res.status(404).json({ error: "not found" });
         return;
@@ -712,8 +734,19 @@ async function runHttp(port: number) {
       res.json(rec);
     });
 
-    // Create or overwrite a project (the app PUTs its full record here). This is
-    // also the migration path: a browser-only project is written to disk on first sync.
+    // Which of these image blobs does the server still need? The app uploads only
+    // the missing ones (dedup across languages/projects/pushes).
+    app.post(`${p}/projects/:id/blobs/check`, async (req, res) => {
+      try {
+        const names = Array.isArray(req.body?.names) ? req.body.names : [];
+        res.json({ missing: await missingBlobs(names) });
+      } catch (e: any) {
+        res.status(400).json({ error: String(e?.message ?? e) });
+      }
+    });
+
+    // Create or overwrite a project (the app PUTs its small refs record here). This
+    // is also the migration path: a browser-only project is written on first sync.
     app.put(`${p}/projects/:id`, async (req, res) => {
       try {
         const rec = { ...(req.body || {}), id: req.params.id };

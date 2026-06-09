@@ -1492,24 +1492,73 @@ function compressDataUrlToJpeg(dataUrl, quality = 0.85) {
     });
 }
 
-// Build the payload to send to the server: compress the heavy raster images
-// (per-language screenshots, legacy src, background image). Element icons/graphics
-// keep their original encoding to preserve transparency.
-async function buildRemotePayload(record) {
+// Decode a data: URL to raw bytes + mime.
+function dataUrlToBytes(dataUrl) {
+    const comma = dataUrl.indexOf(',');
+    const header = dataUrl.slice(5, comma); // e.g. "image/jpeg;base64"
+    const mime = header.split(';')[0] || 'application/octet-stream';
+    const body = dataUrl.slice(comma + 1);
+    let bytes;
+    if (/;base64/i.test(header)) {
+        const bin = atob(body);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } else {
+        bytes = new TextEncoder().encode(decodeURIComponent(body));
+    }
+    return { bytes, mime };
+}
+
+async function sha256Hex(bytes) {
+    const buf = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+const EXT_FROM_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
+
+// Externalize a project's images for upload: compress raster images to JPEG,
+// replace every inline data:image URL with a content-hash reference
+// ("appdisk://<sha>.<ext>"), and collect the unique image blobs to upload as
+// binary. Identical images (e.g. the same screenshot across many languages) are
+// deduped to a single blob, so the project JSON stays tiny and the transfer is
+// small and fast — no more giant base64 payloads hitting body-size limits.
+async function externalizeForUpload(record) {
     const clone = JSON.parse(JSON.stringify(record));
-    for (const s of clone.screenshots || []) {
-        if (typeof s.src === 'string') s.src = await compressDataUrlToJpeg(s.src);
-        if (s.localizedImages) {
-            for (const lang of Object.keys(s.localizedImages)) {
-                const li = s.localizedImages[lang];
-                if (li && typeof li.src === 'string') li.src = await compressDataUrlToJpeg(li.src);
+    const blobs = new Map(); // name -> { bytes, mime }
+    const seen = new Map();  // original dataUrl -> ref (avoid recompressing duplicates)
+
+    const handle = async (val) => {
+        if (typeof val === 'string' && val.startsWith('data:image/')) {
+            if (seen.has(val)) return seen.get(val);
+            const compressed = await compressDataUrlToJpeg(val);
+            const { bytes, mime } = dataUrlToBytes(compressed);
+            const hash = (await sha256Hex(bytes)).slice(0, 40);
+            const ext = EXT_FROM_MIME[mime] || 'png';
+            const name = hash + '.' + ext;
+            if (!blobs.has(name)) blobs.set(name, { bytes, mime });
+            const ref = 'appdisk://' + name;
+            seen.set(val, ref);
+            return ref;
+        }
+        return val;
+    };
+    const walk = async (obj) => {
+        if (Array.isArray(obj)) {
+            for (let i = 0; i < obj.length; i++) {
+                const mapped = await handle(obj[i]);
+                if (mapped !== obj[i]) obj[i] = mapped;
+                else if (obj[i] && typeof obj[i] === 'object') await walk(obj[i]);
+            }
+        } else if (obj && typeof obj === 'object') {
+            for (const k of Object.keys(obj)) {
+                const mapped = await handle(obj[k]);
+                if (mapped !== obj[k]) obj[k] = mapped;
+                else if (obj[k] && typeof obj[k] === 'object') await walk(obj[k]);
             }
         }
-        if (s.background && typeof s.background.image === 'string') {
-            s.background.image = await compressDataUrlToJpeg(s.background.image);
-        }
-    }
-    return clone;
+    };
+    await walk(clone);
+    return { record: clone, blobs: Array.from(blobs, ([name, v]) => ({ name, bytes: v.bytes, mime: v.mime })) };
 }
 
 const RemoteStore = {
@@ -1544,11 +1593,42 @@ const RemoteStore = {
     },
     async put(record) {
         const b = this.baseUrl(); if (!b || !record || !record.id) return false;
+        const id = encodeURIComponent(record.id);
         try {
-            setSyncStatus('syncing', 'Envoi sur le disque…');
-            const payload = await buildRemotePayload(record);
-            const r = await fetch(b + '/projects/' + encodeURIComponent(record.id), {
-                method: 'PUT', headers: this._headers(true), body: JSON.stringify(payload)
+            setSyncStatus('syncing', 'Préparation des images…');
+            const { record: refRecord, blobs } = await externalizeForUpload(record);
+
+            // Ask which image blobs the server still needs (dedup across pushes).
+            let toUpload = blobs;
+            try {
+                const r = await fetch(b + '/projects/' + id + '/blobs/check', {
+                    method: 'POST', headers: this._headers(true), body: JSON.stringify({ names: blobs.map(x => x.name) })
+                });
+                if (r.ok) {
+                    const missing = new Set((await r.json()).missing || []);
+                    toUpload = blobs.filter(x => missing.has(x.name));
+                }
+            } catch (e) { /* fall back to uploading all */ }
+
+            // Upload missing image blobs as raw binary (no base64 bloat).
+            for (let i = 0; i < toUpload.length; i++) {
+                setSyncStatus('syncing', 'Envoi des images… ' + (i + 1) + '/' + toUpload.length);
+                const blob = toUpload[i];
+                const r = await fetch(b + '/projects/' + id + '/blobs/' + blob.name, {
+                    method: 'PUT',
+                    headers: { ...this._headers(false), 'Content-Type': blob.mime },
+                    body: blob.bytes
+                });
+                if (!r.ok) {
+                    setSyncStatus('error', 'Échec de l’envoi d’une image (HTTP ' + r.status + ')');
+                    return false;
+                }
+            }
+
+            // Finally PUT the tiny references-only project record.
+            setSyncStatus('syncing', 'Enregistrement du projet…');
+            const r = await fetch(b + '/projects/' + id, {
+                method: 'PUT', headers: this._headers(true), body: JSON.stringify(refRecord)
             });
             setSyncStatus(r.ok ? 'ok' : 'error', r.ok ? 'Enregistré sur le disque' : 'Échec de l’enregistrement (HTTP ' + r.status + ')');
             return r.ok;
@@ -1663,16 +1743,26 @@ async function syncWithRemote() {
         const localCount = local?.screenshots?.length || 0;
         const serverCount = serverCounts.get(sp.id) || 0;
         let count = serverCount;
-        if (local && localCount > serverCount) {
+        if (!local) {
+            // Not in this browser yet — pull it down.
+            const rec = await RemoteStore.get(sp.id);
+            if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
+        } else if (localCount > serverCount) {
+            // Local is richer — repair the server, keep local (no big download).
             const meta = projects.find(p => p.id === sp.id);
             await RemoteStore.put({ ...local, name: meta ? meta.name : sp.name });
-            count = localCount; // keep the richer local copy as-is
-        } else {
+            count = localCount;
+        } else if (serverCount > localCount) {
+            // Server has more — pull it down.
             const rec = await RemoteStore.get(sp.id);
             if (rec && (rec.screenshots?.length || 0) >= localCount) {
                 await idbPutProject(rec);
                 count = rec.screenshots?.length || 0;
             }
+        } else {
+            // Same count and already present locally → keep local, skip the
+            // (potentially large) download. Big load-time win for image-heavy projects.
+            count = localCount;
         }
         const existing = merged.find(p => p.id === sp.id);
         if (existing) { existing.name = sp.name; existing.screenshotCount = count; }
@@ -1740,18 +1830,20 @@ async function init() {
         await loadState();
         syncUIWithState();
         updateCanvas();
-        // Auto-connect to the MCP server so the connection status persists across
-        // reloads (the sync above already works over REST regardless).
-        const savedMcpUrl = localStorage.getItem('mcpServerUrl');
-        if (savedMcpUrl) {
-            connectMcpServer(savedMcpUrl, localStorage.getItem('mcpServerToken') || '');
-        }
     } catch (e) {
         console.error('Initialization error:', e);
         // Continue with defaults
         syncUIWithState();
         updateCanvas();
     }
+    // Auto-connect to the MCP server so the connection status persists across
+    // reloads. Runs regardless of any error above (sync also works over REST).
+    try {
+        const savedMcpUrl = localStorage.getItem('mcpServerUrl');
+        if (savedMcpUrl && typeof connectMcpServer === 'function') {
+            connectMcpServer(savedMcpUrl, localStorage.getItem('mcpServerToken') || '');
+        }
+    } catch (e) { /* non-fatal */ }
 }
 
 // Set up event listeners immediately (don't wait for async init)
@@ -2014,6 +2106,7 @@ function loadState() {
                                     const langData = s.localizedImages[lang];
                                     if (langData?.src) {
                                         const langImg = new Image();
+                                        langImg.decoding = 'async';
                                         langImg.onload = () => {
                                             localizedImages[lang] = { image: langImg, src: langData.src, name: langData.name || s.name };
                                             langDone();
@@ -2057,6 +2150,7 @@ function loadState() {
                                     checkAllLoaded();
                                 };
                                 const img = new Image();
+                                img.decoding = 'async';
                                 img.onload = () => finishOld(img);
                                 img.onerror = () => finishOld(null); // preserve src even if decode fails
                                 img.src = s.src;
