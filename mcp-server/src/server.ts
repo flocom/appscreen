@@ -305,10 +305,44 @@ async function deliver(
 // ---------- Build the MCP server ----------
 
 function buildServer(ctx: ServerCtx = {}): McpServer {
-  const server = new McpServer({
-    name: "appscreen-mcp",
-    version: "1.0.0",
-  });
+  const server = new McpServer(
+    {
+      name: "appscreen-mcp",
+      version: "1.0.0",
+    },
+    {
+      // Surfaced to AI clients as the server's usage guide.
+      instructions: [
+        "App Store screenshot generator + persistent project store (shared with the appscreen web app:",
+        "everything you change here appears live in the user's browser).",
+        "",
+        "TWO MODES:",
+        "1. One-off rendering: generate_screenshot / generate_batch return finished PNGs without touching",
+        "   any project. Helpers: list_output_sizes, list_gradient_presets.",
+        "2. Project editing (persistent): list_projects → get_project (returns indices + EVERY current",
+        "   setting) → mutate → the user finishes in the web app.",
+        "",
+        "PROJECT MODEL: a project has screenshots (ordered; referenced by index). Each screenshot holds",
+        "per-language images (localizedImages) and texts (headlines/subheadlines keyed by language code),",
+        "one background, device placement settings (under `screenshot`), text styling (under `text`),",
+        "elements and popouts.",
+        "",
+        "WHICH TOOL: images → set_screenshot_image (one call per language). Text content →",
+        "set_screenshot_text (accepts {lang:text} maps, all languages in one call). Background gradient/",
+        "solid → set_screenshot_background (or `all:true` for every screenshot). ANY other parameter →",
+        "update_screenshot (deep-merge patch: objects merge, arrays/scalars replace; e.g.",
+        "{screenshot:{scale:80},text:{headlineSize:90}}). Project-level settings (outputDevice, languages,",
+        "defaults, name) → update_project. Manage panels: add_screenshot, remove_screenshot,",
+        "reorder_screenshots (indices shift after both — re-check with get_project).",
+        "",
+        "CONCURRENCY: writes are safe to run in parallel — the server serializes writes per project",
+        "(different projects run concurrently). No need to throttle or sequence your calls.",
+        "",
+        "LANGUAGES: ISO codes ('en','fr','de','pt-br'…). Setting an image/text for a new language",
+        "automatically adds it to projectLanguages.",
+      ].join("\n"),
+    },
+  );
 
   // Make the efficient large-image path discoverable from the tool description.
   // Embeds this server's actual upload URL when known (HTTP transport).
@@ -319,6 +353,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
   server.registerTool(
     "list_output_sizes",
     {
+      annotations: { readOnlyHint: true },
       title: "List output sizes",
       description:
         "List all supported App Store / Play Store / web output sizes (device key → pixel dimensions).",
@@ -332,6 +367,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
   server.registerTool(
     "list_gradient_presets",
     {
+      annotations: { readOnlyHint: true },
       title: "List gradient presets",
       description:
         "List the 25 built-in gradient presets (name → CSS and parsed angle/stops).",
@@ -429,6 +465,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
   server.registerTool(
     "list_projects",
     {
+      annotations: { readOnlyHint: true },
       title: "List projects",
       description:
         "List all saved appscreen projects on the server's disk (id, name, screenshot count, languages).",
@@ -440,6 +477,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
   server.registerTool(
     "get_project",
     {
+      annotations: { readOnlyHint: true },
       title: "Get a project",
       description:
         "Read one project. Returns a compact summary (screenshots, per-language images & texts) by " +
@@ -482,6 +520,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
   server.registerTool(
     "delete_project",
     {
+      annotations: { destructiveHint: true },
       title: "Delete a project",
       description: "Permanently delete a project from disk.",
       inputSchema: { id: z.string().describe("Project id to delete.") },
@@ -701,6 +740,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
   server.registerTool(
     "remove_screenshot",
     {
+      annotations: { destructiveHint: true },
       title: "Remove a screenshot from a project",
       description: "Delete the screenshot at `index`. Remaining screenshots shift down (re-check indices with get_project).",
       inputSchema: {
