@@ -610,7 +610,14 @@ async function runHttp(port: number) {
   // Binary upload endpoint (raw image bytes — no base64). Must come before the
   // JSON parser so it isn't intercepted. Returns a reference to pass as an
   // `image` field, avoiding huge base64 in the MCP request.
-  app.post("/upload", express.raw({ type: "*/*", limit: "50mb" }), (req, res) => {
+  //
+  // All non-MCP HTTP routes are mounted under BOTH "/" and "/mcp". Behind a
+  // reverse proxy that only forwards "/mcp/*" to this server (e.g. the rest of
+  // the domain serving the web app), the web app reaches the REST API at
+  // "<host>/mcp/projects"; locally everything also works at the root.
+  const HTTP_PREFIXES = ["", "/mcp"];
+
+  const uploadHandler = (req: express.Request, res: express.Response) => {
     const buf = req.body as Buffer;
     if (!Buffer.isBuffer(buf) || buf.length === 0) {
       res.status(400).json({ error: "empty body — POST the raw image bytes" });
@@ -629,7 +636,10 @@ async function runHttp(port: number) {
       bytes: buf.length,
       expiresIn: ttlSec,
     });
-  });
+  };
+  for (const p of HTTP_PREFIXES) {
+    app.post(`${p}/upload`, express.raw({ type: "*/*", limit: "50mb" }), uploadHandler);
+  }
 
   app.use(express.json({ limit: "50mb" }));
 
@@ -652,59 +662,63 @@ async function runHttp(port: number) {
     }
   });
 
-  // Temporary download endpoint for deliver:'url'. Auto-expires (see filestore).
-  app.get("/files/:id", (req, res) => {
-    const id = req.params.id.replace(/\.[a-z0-9]+$/i, "");
-    const f = getFile(id);
-    if (!f) {
-      res.status(404).json({ error: "not found or expired" });
-      return;
-    }
-    res.setHeader("Content-Type", f.mime);
-    res.setHeader("Cache-Control", "no-store");
-    res.send(f.buf);
-  });
-
-  // ---------- Project REST API (used by the web app to sync to disk) ----------
-  // Same on-disk store the MCP project tools use, so the app and Claude share state.
-  app.get("/projects", async (_req, res) => {
-    try {
-      res.json(await listProjects());
-    } catch (e: any) {
-      res.status(500).json({ error: String(e?.message ?? e) });
-    }
-  });
-
-  app.get("/projects/:id", async (req, res) => {
-    const rec = await getProject(req.params.id);
-    if (!rec) {
-      res.status(404).json({ error: "not found" });
-      return;
-    }
-    res.json(rec);
-  });
-
-  // Create or overwrite a project (the app PUTs its full record here). This is
-  // also the migration path: a browser-only project is written to disk on first sync.
-  app.put("/projects/:id", async (req, res) => {
-    try {
-      const rec = { ...(req.body || {}), id: req.params.id };
-      if (!Array.isArray(rec.screenshots)) {
-        res.status(400).json({ error: "record needs a screenshots array" });
+  // Temporary download endpoints + project REST API, mounted under each prefix.
+  const registerRestRoutes = (p: string) => {
+    // Temporary download endpoint for deliver:'url'. Auto-expires (see filestore).
+    app.get(`${p}/files/:id`, (req, res) => {
+      const id = req.params.id.replace(/\.[a-z0-9]+$/i, "");
+      const f = getFile(id);
+      if (!f) {
+        res.status(404).json({ error: "not found or expired" });
         return;
       }
-      const saved = await saveProject(rec);
-      res.json({ ok: true, id: saved.id, updatedAt: saved.updatedAt });
-    } catch (e: any) {
-      res.status(500).json({ error: String(e?.message ?? e) });
-    }
-  });
+      res.setHeader("Content-Type", f.mime);
+      res.setHeader("Cache-Control", "no-store");
+      res.send(f.buf);
+    });
 
-  app.delete("/projects/:id", async (req, res) => {
-    res.json({ ok: await deleteProject(req.params.id) });
-  });
+    // ---------- Project REST API (used by the web app to sync to disk) ----------
+    // Same on-disk store the MCP project tools use, so the app and Claude share state.
+    app.get(`${p}/projects`, async (_req, res) => {
+      try {
+        res.json(await listProjects());
+      } catch (e: any) {
+        res.status(500).json({ error: String(e?.message ?? e) });
+      }
+    });
 
-  app.get("/health", (_req, res) => res.json({ ok: true }));
+    app.get(`${p}/projects/:id`, async (req, res) => {
+      const rec = await getProject(req.params.id);
+      if (!rec) {
+        res.status(404).json({ error: "not found" });
+        return;
+      }
+      res.json(rec);
+    });
+
+    // Create or overwrite a project (the app PUTs its full record here). This is
+    // also the migration path: a browser-only project is written to disk on first sync.
+    app.put(`${p}/projects/:id`, async (req, res) => {
+      try {
+        const rec = { ...(req.body || {}), id: req.params.id };
+        if (!Array.isArray(rec.screenshots)) {
+          res.status(400).json({ error: "record needs a screenshots array" });
+          return;
+        }
+        const saved = await saveProject(rec);
+        res.json({ ok: true, id: saved.id, updatedAt: saved.updatedAt });
+      } catch (e: any) {
+        res.status(500).json({ error: String(e?.message ?? e) });
+      }
+    });
+
+    app.delete(`${p}/projects/:id`, async (req, res) => {
+      res.json({ ok: await deleteProject(req.params.id) });
+    });
+
+    app.get(`${p}/health`, (_req, res) => res.json({ ok: true }));
+  };
+  HTTP_PREFIXES.forEach(registerRestRoutes);
 
   app.listen(port, () => {
     console.error(`[appscreen-mcp] HTTP listening on http://localhost:${port}/mcp`);

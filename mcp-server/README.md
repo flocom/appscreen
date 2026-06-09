@@ -181,7 +181,15 @@ MCP tools above let an agent browse and edit those same projects.
 
 The web app talks to these over a small REST API (HTTP transport only): `GET /projects`,
 `GET /projects/:id`, `PUT /projects/:id` (create/overwrite — this is the migration path),
-`DELETE /projects/:id`. The MCP project tools work on both stdio and HTTP transports.
+`DELETE /projects/:id`. These are mounted under **both `/` and `/mcp`**, so behind a reverse
+proxy that only forwards `/mcp/*` to this server (e.g. a Cloudflare Tunnel where the rest of the
+domain serves the web app), the app reaches them at `https://<host>/mcp/projects`. The MCP project
+tools work on both stdio and HTTP transports.
+
+> **Automatic deploys.** CI publishes this image to `ghcr.io/<owner>/appscreen-mcp:latest` on every
+> merge to main; `docker-compose.prod.yml` (repo root) runs it alongside the web app with a
+> Watchtower container that auto-pulls and redeploys. Point `APPSCREEN_PROJECTS_DIR` at a mounted
+> volume (the prod compose uses `/data/projects`) so projects survive redeploys.
 
 > The web app compresses the heavy raster images (screenshots + background) to JPEG before
 > syncing, to save disk space; icons/graphics with transparency are left untouched.

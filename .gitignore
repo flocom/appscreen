@@ -14,6 +14,10 @@ node_modules/
 projects/
 mcp-server/projects/
 
+# Production deployment data volumes
+data/
+work/
+
 # Build output
 dist/
 out/
