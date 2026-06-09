@@ -30,6 +30,7 @@ import {
   resolveImageToDataUrl,
   summarizeProject,
   putBlob,
+  getBlob,
   missingBlobs,
 } from "./projectstore.js";
 
@@ -725,13 +726,33 @@ async function runHttp(port: number) {
     });
 
     app.get(`${p}/projects/:id`, async (req, res) => {
-      // inline=true rebuilds data URLs from the blob store for the browser.
-      const rec = await getProject(req.params.id, { inline: true });
+      // Default inlines data URLs (back-compat). ?refs=1 returns the compact
+      // refs record (disk-only mode: the app resolves blobs on demand).
+      const inline = req.query.refs ? false : true;
+      const rec = await getProject(req.params.id, { inline });
       if (!rec) {
         res.status(404).json({ error: "not found" });
         return;
       }
       res.json(rec);
+    });
+
+    // Serve a single image blob (content-addressed → safe to cache forever).
+    // Used by the web app's "disk-only" mode: the browser keeps refs, not bytes.
+    app.get(`${p}/projects/:id/blobs/:name`, async (req, res) => {
+      const buf = await getBlob(req.params.name);
+      if (!buf) {
+        res.status(404).json({ error: "not found" });
+        return;
+      }
+      const ext = (req.params.name.split(".").pop() || "png").toLowerCase();
+      const mimes: Record<string, string> = {
+        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+        webp: "image/webp", gif: "image/gif", svg: "image/svg+xml", bmp: "image/bmp",
+      };
+      res.setHeader("Content-Type", mimes[ext] || "application/octet-stream");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      res.send(buf);
     });
 
     // Which of these image blobs does the server still need? The app uploads only
