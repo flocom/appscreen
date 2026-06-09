@@ -2094,6 +2094,7 @@ async function reloadProjectFromServer(id) {
             updateGradientStopsUI();
             updateProjectSelector();
             updateCanvas();
+            resetHistory(); // the project content was replaced from the server
         } finally {
             _reloadingFromServer = false;
         }
@@ -2234,11 +2235,13 @@ async function init() {
         await loadState();
         syncUIWithState();
         updateCanvas();
+        resetHistory();
     } catch (e) {
         console.error('Initialization error:', e);
         // Continue with defaults
         syncUIWithState();
         updateCanvas();
+        resetHistory();
     }
     // Auto-connect to the MCP server so the connection status persists across
     // reloads. Uses the resolved URL (saved, else auto-detected from the page
@@ -2278,6 +2281,179 @@ if (typeof window !== 'undefined') {
     const flush = () => { if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; saveState(); } };
     window.addEventListener('beforeunload', flush);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+}
+
+// ============================================================================
+// Undo / Redo (history)
+// ============================================================================
+// Snapshot-based history of the editing state. A snapshot deep-clones the
+// editable slice of `state` but KEEPS decoded Image objects by reference (so
+// undo/redo never re-decodes images). Edits are coalesced: a burst of changes
+// (dragging a slider, typing) collapses into a single undo step after a short
+// idle, and the step records the state from BEFORE the burst.
+let _undoStack = [];
+let _redoStack = [];
+let _committedSnapshot = null;   // last committed state (what redo returns to)
+let _committedFp = null;         // cheap fingerprint of the committed state
+let _historyBaseline = null;     // state to undo TO for the in-progress burst
+let _historyTimer = null;
+let _historySuspended = false;   // true while applying undo/redo (don't record)
+const HISTORY_MAX = 80;
+const HISTORY_DEBOUNCE_MS = 450;
+
+// Deep clone plain data while preserving Image/Canvas elements by reference.
+function cloneKeepingImages(obj) {
+    if (obj == null || typeof obj !== 'object') return obj;
+    if (typeof HTMLImageElement !== 'undefined' && obj instanceof HTMLImageElement) return obj;
+    if (typeof HTMLCanvasElement !== 'undefined' && obj instanceof HTMLCanvasElement) return obj;
+    if (Array.isArray(obj)) return obj.map(cloneKeepingImages);
+    const out = {};
+    for (const k of Object.keys(obj)) out[k] = cloneKeepingImages(obj[k]);
+    return out;
+}
+
+function captureHistoryState() {
+    return cloneKeepingImages({
+        selectedIndex: state.selectedIndex,
+        currentLanguage: state.currentLanguage,
+        outputDevice: state.outputDevice,
+        customWidth: state.customWidth,
+        customHeight: state.customHeight,
+        projectLanguages: state.projectLanguages,
+        defaults: state.defaults,
+        screenshots: state.screenshots,
+    });
+}
+
+// Cheap content fingerprint: image OBJECTS collapse to a marker, but their src
+// strings remain, so image swaps and every settings/text change are detected.
+function historyFingerprint() {
+    try {
+        return JSON.stringify({
+            i: state.selectedIndex, l: state.currentLanguage, d: state.outputDevice,
+            w: state.customWidth, h: state.customHeight, langs: state.projectLanguages,
+            s: state.screenshots,
+        }, (k, v) => {
+            if (typeof HTMLImageElement !== 'undefined' && v instanceof HTMLImageElement) return '#img';
+            if (typeof HTMLCanvasElement !== 'undefined' && v instanceof HTMLCanvasElement) return '#cv';
+            return v;
+        });
+    } catch (e) { return String(Math.random()); }
+}
+
+function applyHistoryState(snap) {
+    const s = cloneKeepingImages(snap);
+    state.selectedIndex = s.selectedIndex;
+    state.currentLanguage = s.currentLanguage;
+    state.outputDevice = s.outputDevice;
+    state.customWidth = s.customWidth;
+    state.customHeight = s.customHeight;
+    state.projectLanguages = s.projectLanguages;
+    state.defaults = s.defaults;
+    state.screenshots = s.screenshots;
+    // Keep the legacy single `image` field in sync with the current language.
+    state.screenshots.forEach(sc => {
+        const li = sc.localizedImages && sc.localizedImages[state.currentLanguage];
+        sc.image = (li && li.image) ? li.image : (sc.image || null);
+    });
+
+    _historySuspended = true;
+    try {
+        if (typeof syncUIWithState === 'function') syncUIWithState();
+        if (typeof updateScreenshotList === 'function') updateScreenshotList();
+        if (typeof updateGradientStopsUI === 'function') updateGradientStopsUI();
+        if (typeof renderPerScreenTextUI === 'function') { try { renderPerScreenTextUI(); } catch (e) {} }
+        if (typeof updateCanvas === 'function') updateCanvas();
+        // updateCanvas only SCHEDULES a debounced save; force it to run now, while
+        // still suspended, so the timer can't fire later (unsuspended) and record
+        // the undo/redo as a brand-new change.
+        saveState();
+    } finally {
+        _historySuspended = false;
+    }
+    _committedSnapshot = captureHistoryState();
+    _committedFp = historyFingerprint();
+    updateUndoRedoUI();
+}
+
+// Forget all history and treat the current state as the committed baseline.
+// Called after loading/switching/reloading a project.
+function resetHistory() {
+    _undoStack = [];
+    _redoStack = [];
+    _historyBaseline = null;
+    if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null; }
+    _committedSnapshot = captureHistoryState();
+    _committedFp = historyFingerprint();
+    updateUndoRedoUI();
+}
+
+// Called (debounced) from saveState on every change. Records one undo step per
+// burst, holding the state from before the burst began.
+function recordHistoryDebounced() {
+    if (_historySuspended) return;
+    if (_committedSnapshot === null) { _committedSnapshot = captureHistoryState(); _committedFp = historyFingerprint(); }
+    if (_historyBaseline === null) _historyBaseline = _committedSnapshot;
+    if (_historyTimer) clearTimeout(_historyTimer);
+    _historyTimer = setTimeout(commitHistory, HISTORY_DEBOUNCE_MS);
+}
+
+function commitHistory() {
+    if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null; }
+    if (_historyBaseline === null) return;
+    const baseline = _historyBaseline;
+    _historyBaseline = null;
+    const nowFp = historyFingerprint();
+    if (nowFp === _committedFp) return; // nothing actually changed
+    _undoStack.push(baseline);
+    if (_undoStack.length > HISTORY_MAX) _undoStack.shift();
+    _redoStack = [];
+    _committedSnapshot = captureHistoryState();
+    _committedFp = nowFp;
+    updateUndoRedoUI();
+}
+
+function canUndo() { return _undoStack.length > 0 || _historyBaseline !== null; }
+function canRedo() { return _redoStack.length > 0; }
+
+function undo() {
+    // Flush any in-progress burst so its step is on the stack first.
+    if (_historyTimer || _historyBaseline !== null) commitHistory();
+    if (_undoStack.length === 0) return;
+    const prev = _undoStack.pop();
+    _redoStack.push(_committedSnapshot);
+    applyHistoryState(prev);
+}
+
+function redo() {
+    if (_historyTimer || _historyBaseline !== null) commitHistory();
+    if (_redoStack.length === 0) return;
+    const next = _redoStack.pop();
+    _undoStack.push(_committedSnapshot);
+    if (_undoStack.length > HISTORY_MAX) _undoStack.shift();
+    applyHistoryState(next);
+}
+
+function updateUndoRedoUI() {
+    const u = document.getElementById('undo-btn');
+    const r = document.getElementById('redo-btn');
+    if (u) u.disabled = !canUndo();
+    if (r) r.disabled = !canRedo();
+}
+
+// Keyboard: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z or Ctrl+Y = redo. Never hijack
+// undo while typing in a field (let the browser's native text undo work there).
+if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', (e) => {
+        const key = (e.key || '').toLowerCase();
+        if (key !== 'z' && key !== 'y') return;
+        if (!(e.metaKey || e.ctrlKey)) return;
+        const t = document.activeElement;
+        const tag = t && t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return;
+        if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+        else if (key === 'z') { e.preventDefault(); undo(); }
+    });
 }
 
 function saveState() {
@@ -2357,6 +2533,9 @@ function saveState() {
 
     // Mirror the save to the MCP server's disk (debounced; no-op if not configured).
     scheduleRemotePush({ ...stateToSave, name: project ? project.name : currentProjectId });
+
+    // Record an undo step for this change (coalesced; skipped during undo/redo).
+    recordHistoryDebounced();
 }
 
 // Migrate 3D positions from old formula to new formula
@@ -2796,6 +2975,7 @@ async function switchProject(projectId) {
     updateGradientStopsUI();
     updateProjectSelector();
     updateCanvas();
+    resetHistory(); // undo history is per-project; start fresh
 }
 
 // Create a new project
