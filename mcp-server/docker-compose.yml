@@ -23,6 +23,10 @@ services:
     environment:
       MCP_TRANSPORT: http
       PORT: "3000"
+      # Persisted project store (mounted below). WITHOUT this, projects live in
+      # the container's writable layer and are DESTROYED on every recreate
+      # (image update, compose up after an edit, watchtower redeploy…).
+      APPSCREEN_PROJECTS_DIR: /data/projects
       # Optional shared auth token. When set, all REST + MCP endpoints require
       # "Authorization: Bearer <token>" (or X-Auth-Token; SSE/file downloads accept ?token=).
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
@@ -39,6 +43,7 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     volumes:
       - ./work:/work
+      - ./data/projects:/data/projects
     restart: unless-stopped
 
   # Optional: public HTTPS via Cloudflare Tunnel. Enable with `--profile tunnel`.

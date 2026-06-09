@@ -2056,20 +2056,24 @@ async function syncWithRemote() {
         const local = await idbGetProject(sp.id);
         const localCount = local?.screenshots?.length || 0;
         const serverCount = serverCounts.get(sp.id) || 0;
-        const localRev = (local && typeof local.rev === 'number') ? local.rev : 0;
+        // null = the cached record predates the rev feature (unknown base), which
+        // must NOT compare as rev 0: a wiped/remounted server store restarts revs
+        // at 1, and "1 > 0" would let an emptier server record clobber a richer
+        // local cache. Unknown rev → fall back to the count heuristics below.
+        const localRev = (local && typeof local.rev === 'number') ? local.rev : null;
         const serverRev = (typeof sp.rev === 'number') ? sp.rev : 0;
         let count = serverCount;
         if (!local) {
             // Not in this browser yet — pull it down.
             const rec = await RemoteStore.get(sp.id);
             if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
-        } else if (serverRev > localRev) {
+        } else if (localRev !== null && serverRev > localRev) {
             // Server revision is newer (e.g. Claude/MCP wrote) → pull it down, even
             // if the screenshot count is the same or lower. The rev is authoritative,
             // so this can't be clobbered by the count heuristic below.
             const rec = await RemoteStore.get(sp.id);
             if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
-        } else if (localRev > serverRev) {
+        } else if (localRev !== null && localRev > serverRev) {
             // This browser holds a newer revision than the server — push it up.
             const meta = projects.find(p => p.id === sp.id);
             await RemoteStore.put({ ...local, name: meta ? meta.name : sp.name });
