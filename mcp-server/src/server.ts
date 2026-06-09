@@ -18,6 +18,18 @@ import {
 } from "./presets.js";
 import { renderScreenshot, type RenderSpec } from "./render.js";
 import { putFile, getFile } from "./filestore.js";
+import {
+  listProjects,
+  getProject,
+  saveProject,
+  deleteProject,
+  createProject,
+  addScreenshot,
+  setScreenshotImage,
+  setScreenshotText,
+  resolveImageToDataUrl,
+  summarizeProject,
+} from "./projectstore.js";
 
 // ---------- Zod schemas (shared by generate_screenshot and generate_batch) ----------
 
@@ -393,6 +405,163 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
     },
   );
 
+  // ---------- Project tools (see & modify on-disk projects) ----------
+  // Projects are persisted on the server's disk (see projectstore.ts) and shared
+  // with the web app via the REST endpoints below. These tools let an agent
+  // browse projects, edit the screenshots' images per language, and update the
+  // headline/subheadline text per language.
+
+  const ok = (obj: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }] });
+
+  server.registerTool(
+    "list_projects",
+    {
+      title: "List projects",
+      description:
+        "List all saved appscreen projects on the server's disk (id, name, screenshot count, languages).",
+      inputSchema: {},
+    },
+    async () => ok(await listProjects()),
+  );
+
+  server.registerTool(
+    "get_project",
+    {
+      title: "Get a project",
+      description:
+        "Read one project. Returns a compact summary (screenshots, per-language images & texts) by " +
+        "default; set includeImages=true to also get the raw inline image data URLs (can be large).",
+      inputSchema: {
+        id: z.string().describe("Project id (from list_projects)."),
+        includeImages: z
+          .boolean()
+          .optional()
+          .describe("Include full inline image data URLs in the response (default false)."),
+      },
+    },
+    async ({ id, includeImages }) => {
+      const rec = await getProject(id);
+      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${id}` }] };
+      return ok(includeImages ? rec : summarizeProject(rec));
+    },
+  );
+
+  server.registerTool(
+    "create_project",
+    {
+      title: "Create a project",
+      description: "Create a new, empty project on disk. Returns the new project's id.",
+      inputSchema: {
+        name: z.string().describe("Display name for the project."),
+        id: z.string().optional().describe("Optional explicit id (else auto-generated)."),
+      },
+    },
+    async ({ name, id }) => {
+      try {
+        const rec = await createProject(name, id);
+        return ok({ created: true, id: rec.id, name: rec.name });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_project",
+    {
+      title: "Delete a project",
+      description: "Permanently delete a project from disk.",
+      inputSchema: { id: z.string().describe("Project id to delete.") },
+    },
+    async ({ id }) => ok({ deleted: await deleteProject(id), id }),
+  );
+
+  server.registerTool(
+    "add_screenshot",
+    {
+      title: "Add a screenshot to a project",
+      description:
+        "Append a new screenshot panel to a project. Optionally seed it with an image for a language." +
+        uploadHint,
+      inputSchema: {
+        projectId: z.string(),
+        name: z.string().optional().describe("Screenshot label."),
+        image: z.string().optional().describe("Optional image (any supported input form)."),
+        language: z.string().optional().describe("Language for the image (default project's current, else 'en')."),
+      },
+    },
+    async ({ projectId, name, image, language }) => {
+      const rec = await getProject(projectId);
+      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
+      const dataUrl = image ? await resolveImageToDataUrl(image) : undefined;
+      const index = addScreenshot(rec, { name, image: dataUrl, language });
+      await saveProject(rec);
+      return ok({ projectId, index, screenshotCount: rec.screenshots.length });
+    },
+  );
+
+  server.registerTool(
+    "set_screenshot_image",
+    {
+      title: "Set a screenshot's image (per language)",
+      description:
+        "Replace/set the image of a screenshot in a project, for a given language. Works for every " +
+        "language — call once per language, or build several screenshots' localized images." +
+        uploadHint,
+      inputSchema: {
+        projectId: z.string(),
+        index: z.number().int().min(0).describe("Screenshot index (from get_project)."),
+        image: z.string().describe("Image to set (any supported input form)."),
+        language: z.string().optional().describe("Language code, e.g. 'en','fr','de' (default project's current)."),
+        name: z.string().optional().describe("Optional image file label."),
+      },
+    },
+    async ({ projectId, index, image, language, name }) => {
+      const rec = await getProject(projectId);
+      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
+      try {
+        const dataUrl = await resolveImageToDataUrl(image);
+        setScreenshotImage(rec, index, dataUrl, { language, name });
+        await saveProject(rec);
+        return ok({ projectId, index, language: language || rec.currentLanguage || "en", set: true });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_screenshot_text",
+    {
+      title: "Set a screenshot's headline / subheadline (per language)",
+      description:
+        "Update the headline and/or subheadline text of a screenshot. Pass a single string with a " +
+        "`language` for one locale, or a `headlines`/`subheadlines` map to set many languages at once " +
+        "(e.g. {\"en\":\"Hello\",\"fr\":\"Bonjour\"}). Supports every language.",
+      inputSchema: {
+        projectId: z.string(),
+        index: z.number().int().min(0).describe("Screenshot index (from get_project)."),
+        language: z.string().optional().describe("Target language for single-string headline/subheadline."),
+        headline: z.string().optional().describe("Headline text for `language`."),
+        subheadline: z.string().optional().describe("Subheadline text for `language`."),
+        headlines: z.record(z.string()).optional().describe("Per-language headline map."),
+        subheadlines: z.record(z.string()).optional().describe("Per-language subheadline map."),
+      },
+    },
+    async ({ projectId, index, language, headline, subheadline, headlines, subheadlines }) => {
+      const rec = await getProject(projectId);
+      if (!rec) return { isError: true, content: [{ type: "text", text: `No project: ${projectId}` }] };
+      try {
+        setScreenshotText(rec, index, { language, headline, subheadline, headlines, subheadlines });
+        await saveProject(rec);
+        const s = rec.screenshots[index];
+        return ok({ projectId, index, headlines: s.text?.headlines, subheadlines: s.text?.subheadlines });
+      } catch (e: any) {
+        return { isError: true, content: [{ type: "text", text: String(e?.message ?? e) }] };
+      }
+    },
+  );
+
   return server;
 }
 
@@ -494,6 +663,45 @@ async function runHttp(port: number) {
     res.setHeader("Content-Type", f.mime);
     res.setHeader("Cache-Control", "no-store");
     res.send(f.buf);
+  });
+
+  // ---------- Project REST API (used by the web app to sync to disk) ----------
+  // Same on-disk store the MCP project tools use, so the app and Claude share state.
+  app.get("/projects", async (_req, res) => {
+    try {
+      res.json(await listProjects());
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message ?? e) });
+    }
+  });
+
+  app.get("/projects/:id", async (req, res) => {
+    const rec = await getProject(req.params.id);
+    if (!rec) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
+    res.json(rec);
+  });
+
+  // Create or overwrite a project (the app PUTs its full record here). This is
+  // also the migration path: a browser-only project is written to disk on first sync.
+  app.put("/projects/:id", async (req, res) => {
+    try {
+      const rec = { ...(req.body || {}), id: req.params.id };
+      if (!Array.isArray(rec.screenshots)) {
+        res.status(400).json({ error: "record needs a screenshots array" });
+        return;
+      }
+      const saved = await saveProject(rec);
+      res.json({ ok: true, id: saved.id, updatedAt: saved.updatedAt });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message ?? e) });
+    }
+  });
+
+  app.delete("/projects/:id", async (req, res) => {
+    res.json({ ok: await deleteProject(req.params.id) });
   });
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
