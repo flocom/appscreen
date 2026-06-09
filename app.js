@@ -1803,7 +1803,18 @@ const RemoteStore = {
             return r.ok ? await r.json() : null;
         } catch (e) { return null; }
     },
-    async put(record) {
+    // Serialize all pushes so two uploads never run at once: otherwise their
+    // progress writes to the single sync pill interleave and the "Envoi des
+    // images n/N" counter jumps around randomly. Also prevents overlapping
+    // pushes from racing on shared state.
+    _putChain: Promise.resolve(),
+    put(record) {
+        const task = () => this._put(record);
+        const next = this._putChain.then(task, task);
+        this._putChain = next.catch(() => {}); // keep the chain alive on failure
+        return next;
+    },
+    async _put(record) {
         const b = this.baseUrl(); if (!b || !record || !record.id) return false;
         const id = encodeURIComponent(record.id);
         try {
@@ -1872,6 +1883,12 @@ let remoteProjectIds = new Set();
 // the promise resolves). saveState() is suppressed during this window so the
 // transient empty state is never persisted to IndexedDB or pushed to the server.
 let projectLoading = false;
+// Monotonic token: every loadState() call bumps it and captures its own value.
+// When loads overlap (e.g. importing a 2nd project while the 1st is still
+// hydrating), only the LATEST load may touch state / clear projectLoading / save
+// — a stale load's async image callbacks must do nothing, or they would clobber
+// the new project with the old one's (or an empty) state. (Was a data-loss bug.)
+let loadStateSeq = 0;
 function setProjectLoading(v) {
     projectLoading = v;
     if (v) {
@@ -1904,17 +1921,20 @@ function setSyncStatus(state, msg) {
     }
 }
 
-// Debounced push of the current project to the server (coalesces rapid edits).
-let _remotePushTimer = null;
-let _remotePushRecord = null;
+// Debounced push of a project to the server (coalesces rapid edits). Keyed PER
+// PROJECT id: scheduling a push for project B must not cancel project A's pending
+// push (a single shared timer used to drop A's push entirely — data could be left
+// un-synced after switching/importing projects).
+const _remotePushPending = new Map(); // id -> { timer, record }
 function scheduleRemotePush(record) {
-    if (!RemoteStore.enabled() || !record) return;
-    _remotePushRecord = record;
-    if (_remotePushTimer) clearTimeout(_remotePushTimer);
-    _remotePushTimer = setTimeout(() => {
-        _remotePushTimer = null;
-        const rec = _remotePushRecord;
-        _remotePushRecord = null;
+    if (!RemoteStore.enabled() || !record || !record.id) return;
+    const id = record.id;
+    const entry = _remotePushPending.get(id) || {};
+    entry.record = record;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+        const rec = entry.record;
+        _remotePushPending.delete(id);
         if (rec) RemoteStore.put(rec).then(ok => {
             if (ok && !remoteProjectIds.has(rec.id)) {
                 remoteProjectIds.add(rec.id);
@@ -1922,6 +1942,7 @@ function scheduleRemotePush(record) {
             }
         });
     }, 1500);
+    _remotePushPending.set(id, entry);
 }
 
 // Migrate browser-only projects up to the server, then hydrate server projects
@@ -2215,6 +2236,9 @@ function reconstructElementImages(elements) {
 // Load state from IndexedDB for current project
 function loadState() {
     if (!db) return Promise.resolve();
+    // Claim this load synchronously, so any still-in-flight previous load goes
+    // stale the instant we're called (before its async image callbacks fire).
+    const myToken = ++loadStateSeq;
 
     return new Promise((resolve) => {
         try {
@@ -2223,6 +2247,9 @@ function loadState() {
             const request = store.get(currentProjectId);
 
             request.onsuccess = async () => {
+                // Any load started after us (newer token) makes us "stale".
+                const isStale = () => myToken !== loadStateSeq;
+                if (isStale()) { resolve(); return; } // superseded before our IDB read returned
                 const parsed = request.result;
                 // Hold saves while we (a) pull disk-only image bytes from the
                 // server and (b) decode them, so nothing half-loaded is persisted.
@@ -2232,6 +2259,9 @@ function loadState() {
                     // images (+ backgrounds/elements) now; other languages stay as
                     // refs and load lazily on demand. Avoids fetching every language.
                     await resolveProjectRefs(parsed, parsed.currentLanguage || state.currentLanguage || 'en');
+                    // A newer load superseded us during the await → abort without
+                    // touching state (it now belongs to the newer project).
+                    if (isStale()) { resolve(); return; }
                     // Check if this is an old-style project (no per-screenshot settings)
                     const isOldFormat = !parsed.defaults && (parsed.background || parsed.screenshot || parsed.text);
                     const hasScreenshotsWithoutSettings = parsed.screenshots?.some(s => !s.background && !s.screenshot && !s.text);
@@ -2281,6 +2311,7 @@ function loadState() {
                             const hasLocalizedImages = s.localizedImages && Object.keys(s.localizedImages).length > 0;
 
                             if (!hasLocalizedImages && !s.src) {
+                                if (isStale()) return; // superseded by a newer load
                                 // Blank screen (no image)
                                 const screenshotSettings = s.screenshot || JSON.parse(JSON.stringify(migratedScreenshot));
                                 if (needs3DMigration) {
@@ -2309,6 +2340,7 @@ function loadState() {
                                 const localizedImages = {};
 
                                 const finishScreenshot = () => {
+                                    if (isStale()) return; // superseded by a newer load
                                     const firstLang = Object.keys(localizedImages)[0];
                                     const screenshotSettings = s.screenshot || JSON.parse(JSON.stringify(migratedScreenshot));
                                     if (needs3DMigration) {
@@ -2360,6 +2392,7 @@ function loadState() {
                             } else {
                                 // Old format: migrate to localized images
                                 const finishOld = (img) => {
+                                    if (isStale()) return; // superseded by a newer load
                                     const detectedLang = typeof detectLanguageFromFilename === 'function'
                                         ? detectLanguageFromFilename(s.name || '')
                                         : 'en';
@@ -2394,6 +2427,7 @@ function loadState() {
                         });
 
                         function checkAllLoaded() {
+                            if (isStale()) return; // a newer load owns the state now
                             if (loadedCount === totalToLoad) {
                                 setProjectLoading(false); // images loaded — saves allowed again
                                 updateScreenshotList();
