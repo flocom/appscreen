@@ -765,14 +765,34 @@ function shrinkImageRef(src: any): any {
 }
 
 export function summarizeProject(rec: ProjectRecord): any {
+  // Settings are included in full (they're small, structured JSON) so an AI can
+  // read the current value of anything update_screenshot / update_project can
+  // patch. Only raw image bytes (data URLs) are shrunk to short descriptors.
+  const shrinkDeep = (o: any): any => {
+    if (typeof o === "string") return shrinkImageRef(o);
+    if (Array.isArray(o)) return o.map(shrinkDeep);
+    if (o && typeof o === "object")
+      return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, shrinkDeep(v)]));
+    return o;
+  };
+  const textStyleOf = (t: any) => {
+    if (!t) return t;
+    const { headlines, subheadlines, ...style } = t;
+    return style; // content is surfaced separately below
+  };
   return {
     id: rec.id,
     name: rec.name,
+    rev: rec.rev ?? 0,
     outputDevice: rec.outputDevice,
+    customWidth: rec.customWidth,
+    customHeight: rec.customHeight,
+    selectedIndex: rec.selectedIndex,
     currentLanguage: rec.currentLanguage,
     projectLanguages: rec.projectLanguages || ["en"],
     screenshotCount: rec.screenshots.length,
     updatedAt: rec.updatedAt,
+    defaults: rec.defaults ? shrinkDeep(rec.defaults) : undefined,
     screenshots: rec.screenshots.map((s: any, i: number) => ({
       index: i,
       name: s.name,
@@ -789,6 +809,11 @@ export function summarizeProject(rec: ProjectRecord): any {
       subheadlines: s.text?.subheadlines || {},
       headlineEnabled: s.text?.headlineEnabled ?? true,
       subheadlineEnabled: s.text?.subheadlineEnabled ?? false,
+      background: shrinkDeep(s.background),
+      device: s.screenshot, // placement/effects (patch via update_screenshot {screenshot:{...}})
+      textStyle: textStyleOf(s.text),
+      elements: shrinkDeep(s.elements || []),
+      popouts: shrinkDeep(s.popouts || []),
     })),
   };
 }
