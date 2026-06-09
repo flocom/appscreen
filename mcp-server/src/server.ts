@@ -680,8 +680,9 @@ async function runHttp(port: number) {
   // Optional shared-token auth (MCP_AUTH_TOKEN). When set, every endpoint —
   // REST (projects, blobs, uploads, files) and the MCP endpoint — requires the
   // token via "Authorization: Bearer <token>" or an "X-Auth-Token" header.
-  // GET /events (EventSource can't set headers) and GET /files/<id> (plain
-  // download links) also accept "?token=". When unset, no auth (as before).
+  // GET /events (EventSource), GET /files/<id> (plain download links), and
+  // GET blob endpoints (<img src> loads) can't send headers, so they also
+  // accept "?token=". When unset, no auth (as before).
   // /health stays open for container healthchecks. Preflights are answered by
   // the CORS middleware above, before this runs.
   const authToken = process.env.MCP_AUTH_TOKEN || "";
@@ -701,7 +702,7 @@ async function runHttp(port: number) {
       const bearer = typeof auth === "string" && auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
       const queryOk =
         req.method === "GET" &&
-        /\/(?:events|files\/[^/]+)$/.test(req.path) &&
+        /\/(?:events|files\/[^/]+|projects\/[^/]+\/blobs\/[^/]+)$/.test(req.path) &&
         matches(req.query.token);
       if (matches(bearer) || matches(req.headers["x-auth-token"]) || queryOk) {
         next();

@@ -1691,7 +1691,10 @@ function blobUrlForRef(src) {
     if (src.startsWith(REF_SCHEME)) {
         const base = RemoteStore.baseUrl();
         if (!base) return null;
-        return base + '/projects/' + encodeURIComponent(currentProjectId) + '/blobs/' + src.slice(REF_SCHEME.length);
+        // <img> loads can't send headers — pass the auth token (if any) as a query param.
+        const token = localStorage.getItem('mcpServerToken');
+        return base + '/projects/' + encodeURIComponent(currentProjectId) + '/blobs/' + src.slice(REF_SCHEME.length)
+            + (token ? '?token=' + encodeURIComponent(token) : '');
     }
     return src;
 }
@@ -2159,7 +2162,9 @@ function startRemoteEventStream() {
     if (_remoteEventSource) { try { _remoteEventSource.close(); } catch (e) {} _remoteEventSource = null; }
     if (!b) return;
     let es;
-    try { es = new EventSource(b + '/events'); }
+    // EventSource can't send headers — pass the auth token (if any) as a query param.
+    const token = localStorage.getItem('mcpServerToken');
+    try { es = new EventSource(b + '/events' + (token ? '?token=' + encodeURIComponent(token) : '')); }
     catch (e) { return; }
     _remoteEventSource = es;
 
