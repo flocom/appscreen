@@ -22,6 +22,10 @@ services:
     environment:
       MCP_TRANSPORT: http
       PORT: "3000"
+      # Persisted project store (mounted below). WITHOUT this, projects live in
+      # the container's writable layer and are DESTROYED on every recreate
+      # (image update, compose up after an edit, watchtower redeploy…).
+      APPSCREEN_PROJECTS_DIR: /data/projects
       # Default text font when a spec doesn't set one (must be installed in the image).
       APPSCREEN_FONT_FAMILY: "DejaVu Sans"
       # Restrict browser CORS in production, e.g. https://claude.ai (default: *).
@@ -32,6 +36,7 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     volumes:
       - ./work:/work
+      - ./data/projects:/data/projects
     restart: unless-stopped
 
   # Optional: public HTTPS via Cloudflare Tunnel. Enable with `--profile tunnel`.

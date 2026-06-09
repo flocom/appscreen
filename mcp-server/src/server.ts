@@ -1057,6 +1057,14 @@ async function runHttp(port: number) {
     console.error(`[appscreen-mcp] HTTP listening on http://localhost:${port}/mcp`);
   });
 
+  // Loud store report at startup: if this says "0 projects" on a server that had
+  // data, the volume/path is wrong — fix the mount BEFORE anything writes.
+  listProjects()
+    .then((l) => console.error(
+      `[appscreen-mcp] project store: ${process.env.APPSCREEN_PROJECTS_DIR || "(default ./projects)"} — ${l.length} project(s)${l.length ? ": " + l.map(p => p.id).join(", ") : " (EMPTY — wrong volume mount?)"}`,
+    ))
+    .catch((e) => console.error("[appscreen-mcp] project store unreadable:", e));
+
   // Periodic garbage collection of orphaned image blobs (every 6h), plus one run
   // shortly after startup. The grace period inside gcBlobs() protects blobs whose
   // project record hasn't been written yet, so this is always safe to run.

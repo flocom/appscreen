@@ -9,7 +9,7 @@
 // Both the MCP tools (for Claude) and the REST endpoints (for the web app)
 // read/write through the helpers here, so the two stay in sync.
 
-import { mkdir, readFile, readdir, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile, rm, stat, rename, utimes } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -88,7 +88,16 @@ export async function putBlob(name: string, buf: Buffer): Promise<void> {
   if (!(await blobExists(name))) await writeFile(p, buf);
 }
 export async function getBlob(name: string): Promise<Buffer | null> {
-  try { return await readFile(join(BLOBS_DIR, safeBlobName(name))); } catch { return null; }
+  const safe = safeBlobName(name);
+  try { return await readFile(join(BLOBS_DIR, safe)); } catch { /* try trash below */ }
+  // Resilience: if GC trashed this blob but a record referencing it came back
+  // (restored cache, re-pushed project), restore it transparently from the trash.
+  try {
+    const inTrash = join(PROJECTS_DIR, ".blobs-trash", safe);
+    const buf = await readFile(inTrash);
+    try { await rename(inTrash, join(BLOBS_DIR, safe)); } catch { /* keep serving from trash */ }
+    return buf;
+  } catch { return null; }
 }
 /** Of the given blob names, return those NOT yet on disk (so the client only uploads new ones). */
 export async function missingBlobs(names: string[]): Promise<string[]> {
@@ -117,9 +126,22 @@ function collectRefs(obj: any, out: Set<string>): void {
   }
 }
 
-export interface GcResult { deleted: number; freedBytes: number; kept: number; skippedYoung: number }
+export interface GcResult { deleted: number; freedBytes: number; kept: number; skippedYoung: number; aborted?: string }
 
-/** Delete blobs referenced by no project (and older than the grace period). */
+// Soft-delete target: swept blobs go to a trash folder (restorable with a plain
+// `mv`) and are only permanently purged after this retention period.
+const TRASH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+function trashDir(): string { return join(PROJECTS_DIR, ".blobs-trash"); }
+
+/**
+ * Move blobs referenced by no project to the trash (purged for good after 7
+ * days). SAFETY RAILS (each one aborts the sweep — losing disk space is always
+ * better than losing images):
+ *  - zero project files + a populated blob store = the store is almost certainly
+ *    misconfigured or freshly mounted (wrong volume/path) → never sweep;
+ *  - any project file that fails to parse → never sweep (its refs are invisible);
+ *  - young blobs (grace period) are skipped, as before.
+ */
 export async function gcBlobs(opts: { graceMs?: number } = {}): Promise<GcResult> {
   const empty: GcResult = { deleted: 0, freedBytes: 0, kept: 0, skippedYoung: 0 };
   if (gcRunning) return empty; // never overlap two sweeps
@@ -130,27 +152,48 @@ export async function gcBlobs(opts: { graceMs?: number } = {}): Promise<GcResult
     // Mark: every blob name referenced by any project on disk.
     const referenced = new Set<string>();
     const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json"));
+    let blobFiles: string[] = [];
+    try { blobFiles = await readdir(BLOBS_DIR); } catch { blobFiles = []; }
+    if (files.length === 0 && blobFiles.length > 0) {
+      return { ...empty, aborted: "no project files but blob store is populated — store looks misconfigured, refusing to sweep" };
+    }
     for (const f of files) {
       try { collectRefs(JSON.parse(await readFile(join(PROJECTS_DIR, f), "utf8")), referenced); }
-      catch { /* skip unreadable / non-project file */ }
+      catch { return { ...empty, aborted: `unreadable project file ${f} — refusing to sweep` }; }
     }
-    // Sweep: remove unreferenced blobs that are past the grace period.
+    // Sweep: MOVE unreferenced blobs (past the grace period) to the trash.
     const res: GcResult = { deleted: 0, freedBytes: 0, kept: 0, skippedYoung: 0 };
     const now = Date.now();
     const grace = opts.graceMs ?? GC_GRACE_MS;
-    let blobFiles: string[] = [];
-    try { blobFiles = await readdir(BLOBS_DIR); } catch { blobFiles = []; }
+    await mkdir(trashDir(), { recursive: true });
     for (const name of blobFiles) {
       if (referenced.has(name)) { res.kept++; continue; }
       const full = join(BLOBS_DIR, name);
       try {
         const st = await stat(full);
         if (now - st.mtimeMs < grace) { res.skippedYoung++; continue; } // may be mid-upload
-        await rm(full);
+        const trashed = join(trashDir(), name);
+        await rename(full, trashed); // soft delete — recoverable
+        // Stamp the TRASHED-AT time (rename keeps the old mtime, which would make
+        // retention count from the upload date and purge old blobs immediately).
+        const t = new Date();
+        try { await utimes(trashed, t, t); } catch { /* best effort */ }
         res.deleted++;
         res.freedBytes += st.size;
       } catch { /* file vanished or unreadable — ignore */ }
     }
+    // Purge trash entries past retention — but if a trashed blob became
+    // referenced again (record restored), move it BACK instead of purging.
+    try {
+      for (const name of await readdir(trashDir())) {
+        const full = join(trashDir(), name);
+        try {
+          if (referenced.has(name)) { await rename(full, join(BLOBS_DIR, name)); continue; }
+          const st = await stat(full);
+          if (now - st.mtimeMs > TRASH_RETENTION_MS) await rm(full);
+        } catch { /* ignore per-file errors */ }
+      }
+    } catch { /* no trash dir — fine */ }
     return res;
   } finally {
     gcRunning = false;
@@ -350,7 +393,13 @@ export async function saveProject(
   }
   rec.rev = (prevRev ?? 0) + 1;
   rec.updatedAt = new Date().toISOString();
-  await writeFile(fileFor(rec.id), JSON.stringify(rec));
+  // Atomic write (tmp + rename): a crash/redeploy mid-write can never leave a
+  // truncated project file, and concurrent readers (GC's mark phase!) never see
+  // a half-written record. The ".tmp" suffix keeps it out of *.json scans.
+  const target = fileFor(rec.id);
+  const tmp = target + ".tmp";
+  await writeFile(tmp, JSON.stringify(rec));
+  await rename(tmp, target);
   projectEvents.emit("saved", { id: rec.id, rev: rec.rev }); // live-update browsers via SSE
   return rec;
 }
