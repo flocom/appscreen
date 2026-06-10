@@ -5128,23 +5128,66 @@ function setupEventListeners() {
         else for (const k of Object.keys(obj)) handle(obj[k], nv => { obj[k] = nv; });
     }
 
-    // Inverse: replace every "zip:…" reference with a reconstructed data:image URL.
-    async function inlineImages(obj, zip) {
-        const handle = async (val, set) => {
-            if (typeof val === 'string' && val.startsWith('zip:')) {
-                const path = val.slice(4);
-                const f = zip.file(path);
-                if (f) {
-                    const ext = (path.split('.').pop() || 'png').toLowerCase();
-                    const b64 = await f.async('base64');
-                    set('data:' + (EXT_TO_MIME[ext] || 'image/png') + ';base64,' + b64);
-                }
-            } else if (val && typeof val === 'object') {
-                await inlineImages(val, zip);
+    // Streaming import: upload each image straight from the ZIP (or a legacy
+    // inline data URL) to a binary blob, replacing it with an "appdisk://" ref.
+    // Bounded memory — one image at a time — so a 500 MB backup never becomes one
+    // giant in-memory object, and the final record PUT carries refs only (tiny),
+    // never tripping the server's JSON-body limit.
+    function collectImageSources(obj, out) {
+        if (Array.isArray(obj)) { for (const v of obj) collectImageSources(v, out); }
+        else if (obj && typeof obj === 'object') { for (const k of Object.keys(obj)) collectImageSources(obj[k], out); }
+        else if (typeof obj === 'string' && (obj.startsWith('zip:') || obj.startsWith('data:image/'))) out.add(obj);
+    }
+    function replaceStrings(obj, map) {
+        const keys = Array.isArray(obj) ? obj.map((_, i) => i) : Object.keys(obj);
+        for (const k of keys) {
+            const v = obj[k];
+            if (typeof v === 'string') { if (map.has(v)) obj[k] = map.get(v); }
+            else if (v && typeof v === 'object') replaceStrings(v, map);
+        }
+    }
+    async function uploadImportBlob(projectId, bytes, ext) {
+        const e = (ext || 'png').toLowerCase();
+        const hash = (await sha256Hex(bytes)).slice(0, 40);
+        const name = hash + '.' + e;
+        const base = RemoteStore.baseUrl();
+        if (!base) throw new Error('aucun serveur configuré');
+        const mime = EXT_TO_MIME[e] || 'application/octet-stream';
+        const r = await fetch(base + '/projects/' + encodeURIComponent(projectId) + '/blobs/' + name, {
+            method: 'PUT', headers: { ...RemoteStore._headers(false), 'Content-Type': mime }, body: bytes
+        });
+        if (!r.ok) throw new Error('upload image HTTP ' + r.status + (r.status === 413 ? ' (image > 60 Mo)' : ''));
+        return REF_SCHEME + name;
+    }
+    async function importRecordToServer(data, zip, label) {
+        const sources = new Set();
+        collectImageSources(data, sources);
+        const list = Array.from(sources);
+        const map = new Map();
+        for (let i = 0; i < list.length; i++) {
+            const src = list[i];
+            showUploadProgress('Import des images… (' + (i + 1) + '/' + list.length + ')', label || '');
+            let bytes, ext;
+            if (src.startsWith('zip:')) {
+                const path = src.slice(4);
+                const f = zip && zip.file(path);
+                if (!f) continue; // missing in archive — leave as-is; server verify flags it
+                bytes = await f.async('uint8array');
+                ext = (path.split('.').pop() || 'png').toLowerCase();
+            } else {
+                const r = dataUrlToBytes(src); bytes = r.bytes; ext = r.ext;
             }
-        };
-        if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) await handle(obj[i], nv => { obj[i] = nv; }); }
-        else { for (const k of Object.keys(obj)) await handle(obj[k], nv => { obj[k] = nv; }); }
+            map.set(src, await uploadImportBlob(data.id, bytes, ext));
+        }
+        replaceStrings(data, map);
+        showUploadProgress('Enregistrement du projet…', label || '');
+        const base = RemoteStore.baseUrl();
+        if (!base) throw new Error('aucun serveur configuré');
+        const r = await fetch(base + '/projects/' + encodeURIComponent(data.id), {
+            method: 'PUT', headers: RemoteStore._headers(true), body: JSON.stringify(data)
+        });
+        if (!r.ok) throw new Error('enregistrement du projet HTTP ' + r.status + (r.status === 413 ? ' (record trop volumineux)' : ''));
+        return true;
     }
 
     document.getElementById('export-project-btn').addEventListener('click', async () => {
@@ -5192,15 +5235,22 @@ function setupEventListeners() {
     importInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        if (!RemoteStore.enabled()) {
+            await showAppAlert('Aucun serveur configuré — impossible d’importer un projet.', 'error');
+            importInput.value = '';
+            return;
+        }
         try {
             let manifest;
+            let zip = null;
             const isZip = /\.zip$/i.test(file.name) || file.type === 'application/zip';
             if (isZip) {
-                const zip = await JSZip.loadAsync(file);
+                zip = await JSZip.loadAsync(file);
                 const pj = zip.file('project.json');
                 if (!pj) throw new Error('project.json not found in the ZIP');
                 manifest = JSON.parse(await pj.async('string'));
-                if (manifest && manifest.data) await inlineImages(manifest.data, zip); // restore data URLs from files
+                // NOTE: images stay as "zip:" refs — importRecordToServer streams
+                // each one straight to a blob (no giant in-memory inline step).
             } else {
                 manifest = JSON.parse(await file.text());
             }
@@ -5214,14 +5264,13 @@ function setupEventListeners() {
                 delete data.rev; // fresh revision chain on the server
                 let name = manifest.name || 'Imported Project';
                 if (projects.some(p => p.name === name)) name += ' (Imported)';
+                data.name = name;
                 showUploadProgress('Import du projet…', name);
-                let ok = false;
                 try {
-                    ok = await RemoteStore.put({ ...data, name });
+                    await importRecordToServer(data, zip, name);
                 } finally {
                     hideUploadProgress();
                 }
-                if (!ok) throw new Error('le serveur n’a pas accepté le projet');
                 projects.push({ id: newId, name, screenshotCount: (data.screenshots && data.screenshots.length) || 0 });
                 remoteProjectIds.add(newId);
                 saveProjectsMeta();
@@ -5241,7 +5290,8 @@ function setupEventListeners() {
                         showUploadProgress('Import des projets… (' + (i + 1) + '/' + records.length + ')', rec.name || rec.id || '');
                         rec.id = 'project_' + Date.now() + '_' + i;
                         delete rec.rev;
-                        await RemoteStore.put({ ...rec, name: rec.name || ('Imported ' + (i + 1)) });
+                        rec.name = rec.name || ('Imported ' + (i + 1));
+                        await importRecordToServer(rec, null, rec.name);
                     }
                 } finally {
                     hideUploadProgress();
@@ -5251,7 +5301,8 @@ function setupEventListeners() {
             }
         } catch (e) {
             console.error('Import failed:', e);
-            await showAppAlert('Import failed: ' + e.message, 'error');
+            hideUploadProgress();
+            await showAppAlert('Import échoué : ' + (e && e.message ? e.message : e), 'error');
         }
         importInput.value = '';
     });
