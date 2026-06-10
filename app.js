@@ -8302,8 +8302,24 @@ function getCanvasDimensions(index) {
     return { width: base.width * span, height: base.height, span: span, baseWidth: base.width };
 }
 
+// Coalesce renders to at most one per animation frame. Many UI handlers (slider
+// drags especially) call updateCanvas() many times within a single frame; each
+// call used to do a full-resolution main render PLUS up to 4 side-preview
+// renders. Now repeated calls collapse into a single render on the next frame.
+let _canvasRenderScheduled = false;
 function updateCanvas() {
     scheduleSaveState(); // Persist state (debounced — see scheduleSaveState)
+    if (_canvasRenderScheduled) return;
+    _canvasRenderScheduled = true;
+    requestAnimationFrame(() => {
+        _canvasRenderScheduled = false;
+        renderCanvasNow();
+    });
+}
+
+// Synchronous full render. Call directly only when the result must be applied in
+// the same tick (e.g. the slide transition sets skip-render flags synchronously).
+function renderCanvasNow() {
     if (typeof window !== 'undefined') window.__imgRect = { has: false };
     const dims = getCanvasDimensions();
     canvas.width = dims.width;
@@ -8357,8 +8373,29 @@ function updateCanvas() {
     // Elements above text
     drawElements(ctx, dims, 'above-text');
 
-    // Update side previews
-    updateSidePreviews();
+    // Update side previews — debounced while editing the current screenshot
+    // (neighbours don't change), immediate when the selection/layout changes.
+    scheduleSidePreviews();
+}
+
+// Side previews show the NEIGHBOURING screenshots, which are unaffected by edits
+// to the current one — so re-rendering all four every frame during a slider drag
+// is wasted work (and they each run the full pipeline, noise loop included). Only
+// render them right away when the selection or output layout actually changes;
+// otherwise coalesce to a single trailing render once edits settle.
+let _sidePreviewTimer = null;
+let _lastSidePreviewKey = null;
+function scheduleSidePreviews() {
+    const key = state.selectedIndex + '|' + state.screenshots.length + '|' +
+                state.outputDevice + '|' + state.customWidth + 'x' + state.customHeight;
+    if (key !== _lastSidePreviewKey) {
+        _lastSidePreviewKey = key;
+        if (_sidePreviewTimer) { clearTimeout(_sidePreviewTimer); _sidePreviewTimer = null; }
+        updateSidePreviews();
+        return;
+    }
+    if (_sidePreviewTimer) clearTimeout(_sidePreviewTimer);
+    _sidePreviewTimer = setTimeout(() => { _sidePreviewTimer = null; updateSidePreviews(); }, 180);
 }
 
 function updateSidePreviews() {
@@ -8529,9 +8566,10 @@ function slideToScreenshot(newIndex, direction) {
         // Skip side preview re-render since we already pre-rendered them
         skipSidePreviewRender = true;
 
-        // Now do a full updateCanvas for main preview, far sides, etc.
-        // Side previews won't flicker because we already drew to them
-        updateCanvas();
+        // Now do a full render for main preview, far sides, etc. Render NOW (not
+        // the debounced updateCanvas) so skipSidePreviewRender applies this tick
+        // and the pre-rendered side canvases aren't overwritten (which would flicker).
+        renderCanvasNow();
 
         // Reset flags
         skipSidePreviewRender = false;
@@ -9758,8 +9796,9 @@ async function exportCurrent() {
 
     // Make sure the current language's images are decoded (lazy loading), then render.
     await ensureLanguageImagesLoaded(state.currentLanguage);
-    // Ensure canvas is up-to-date (especially important for 3D mode)
-    updateCanvas();
+    // Render synchronously (updateCanvas is now rAF-deferred) so the canvas is
+    // current before we read its pixels.
+    renderCanvasNow();
 
     const span = (state.screenshots[state.selectedIndex]?.screenshot?.spanScreens) || 1;
     const panels = sliceCanvasToPanels(canvas, span);
@@ -9847,13 +9886,13 @@ async function exportAllForLanguage(lang) {
     const pad = (n) => String(n).padStart(2, '0');
     for (let i = 0; i < state.screenshots.length; i++) {
         state.selectedIndex = i;
-        updateCanvas();
+        renderCanvasNow(); // synchronous — don't rely on the rAF-deferred updateCanvas
 
         // Update progress
         const percent = Math.round(((i + 1) / total) * 90); // Reserve 10% for ZIP generation
         showExportProgress('Exporting...', `Screenshot ${i + 1} of ${total}`, percent);
 
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 16));
 
         // Slice into panels for panoramic screenshots (span > 1)
         const span = (state.screenshots[i]?.screenshot?.spanScreens) || 1;
@@ -9925,13 +9964,13 @@ async function exportAllLanguages() {
         let panelNum = 1; // running counter so panorama panels stay in order
         for (let i = 0; i < state.screenshots.length; i++) {
             state.selectedIndex = i;
-            updateCanvas();
+            renderCanvasNow(); // synchronous — don't rely on the rAF-deferred updateCanvas
 
             completedItems++;
             const percent = Math.round((completedItems / totalItems) * 90); // Reserve 10% for ZIP
             showExportProgress('Exporting...', `${langName}: Screenshot ${i + 1} of ${totalScreenshots}`, percent);
 
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 16));
 
             // Slice into panels for panoramic screenshots (span > 1)
             const span = (state.screenshots[i]?.screenshot?.spanScreens) || 1;
