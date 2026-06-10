@@ -67,14 +67,25 @@ function assignImageFileToLanguage(file, lang) {
 async function uploadFilesForLanguage(lang, fileList) {
     const files = Array.from(fileList).filter(f => f.type.startsWith('image/'));
     if (!files.length) return;
-    if (!state.projectLanguages.includes(lang)) addProjectLanguage(lang);
-    // Sort by name so screens line up across languages.
-    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    for (const f of files) await assignImageFileToLanguage(f, lang);
-    updateLanguagesList();
-    if (typeof updateScreenshotList === 'function') updateScreenshotList();
-    updateCanvas();
-    saveState();
+    if (typeof showUploadProgress === 'function') showUploadProgress('Import des images…', '');
+    try {
+        if (!state.projectLanguages.includes(lang)) addProjectLanguage(lang);
+        // Sort by name so screens line up across languages.
+        files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        for (let i = 0; i < files.length; i++) {
+            if (typeof showUploadProgress === 'function') showUploadProgress('Import des images… (' + (i + 1) + '/' + files.length + ')', files[i].name);
+            await assignImageFileToLanguage(files[i], lang);
+        }
+        updateLanguagesList();
+        if (typeof updateScreenshotList === 'function') updateScreenshotList();
+        updateCanvas();
+        // Hold the user until the server confirmed the save.
+        if (typeof showUploadProgress === 'function') showUploadProgress('Enregistrement sur le serveur…', '');
+        saveState();
+        if (typeof waitForServerConfirmation === 'function') await waitForServerConfirmation(currentProjectId);
+    } finally {
+        if (typeof hideUploadProgress === 'function') hideUploadProgress();
+    }
     if (typeof reportImportFailures === 'function') await reportImportFailures();
 }
 
@@ -95,17 +106,30 @@ async function importFolderFiles(fileList) {
     // Group by language, sort within each so screens align.
     const byLang = {};
     tagged.forEach(({ f, lang }) => { (byLang[lang] = byLang[lang] || []).push(f); });
-    for (const lang of Object.keys(byLang)) {
-        if (!state.projectLanguages.includes(lang)) addProjectLanguage(lang);
-        byLang[lang].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-        for (const f of byLang[lang]) await assignImageFileToLanguage(f, lang);
-    }
-    updateLanguagesList();
-    if (typeof updateScreenshotList === 'function') updateScreenshotList();
-    updateCanvas();
-    saveState();
-    if (typeof reportImportFailures === 'function') await reportImportFailures();
     const total = tagged.length;
+    if (typeof showUploadProgress === 'function') showUploadProgress('Import des images…', '');
+    try {
+        let done = 0;
+        for (const lang of Object.keys(byLang)) {
+            if (!state.projectLanguages.includes(lang)) addProjectLanguage(lang);
+            byLang[lang].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+            for (const f of byLang[lang]) {
+                done++;
+                if (typeof showUploadProgress === 'function') showUploadProgress('Import des images… (' + done + '/' + total + ')', f.name);
+                await assignImageFileToLanguage(f, lang);
+            }
+        }
+        updateLanguagesList();
+        if (typeof updateScreenshotList === 'function') updateScreenshotList();
+        updateCanvas();
+        // Hold the user until the server confirmed the save.
+        if (typeof showUploadProgress === 'function') showUploadProgress('Enregistrement sur le serveur…', '');
+        saveState();
+        if (typeof waitForServerConfirmation === 'function') await waitForServerConfirmation(currentProjectId);
+    } finally {
+        if (typeof hideUploadProgress === 'function') hideUploadProgress();
+    }
+    if (typeof reportImportFailures === 'function') await reportImportFailures();
     const langs = Object.keys(byLang).map(l => `${languageFlags[l] || ''} ${languageNames[l] || l}`).join(', ');
     if (typeof showAppAlert === 'function') showAppAlert(`Imported ${total} image(s) across: ${langs}`, 'info');
 }

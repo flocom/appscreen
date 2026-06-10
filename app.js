@@ -2119,7 +2119,7 @@ const RemoteStore = {
                 }
                 confirmPendingUploads(record.id, refRecord, []);
             }
-            setSyncStatus(r.ok ? 'ok' : 'error', r.ok ? 'Enregistré sur le disque' : 'Échec de l’enregistrement (HTTP ' + r.status + ')');
+            setSyncStatus(r.ok ? 'ok' : 'error', r.ok ? 'Enregistré sur le serveur' : 'Échec de l’enregistrement (HTTP ' + r.status + ')');
             return r.ok;
         } catch (e) {
             console.warn('MCP project push failed:', e);
@@ -2219,8 +2219,36 @@ function setProjectLoading(v) {
 
 // Floating indicator shown while a project is being saved to the server's disk.
 // state: 'syncing' | 'ok' | 'error' | 'idle'.
+// ===== Blocking upload overlay =====
+// Shown from the moment files enter the app until the SERVER confirms the save
+// ("c'est soit sur le serveur, soit ça ne l'est pas du tout"). The user waits;
+// the duplicate-image dialog renders above it (higher z-index) and stays usable.
+let _uploadOverlayVisible = false;
+function showUploadProgress(status, detail) {
+    if (typeof document === 'undefined') return;
+    _uploadOverlayVisible = true;
+    const m = document.getElementById('upload-progress-modal');
+    const s = document.getElementById('upload-progress-status');
+    const d = document.getElementById('upload-progress-detail');
+    if (s && status != null) s.textContent = status;
+    if (d) d.textContent = detail || '';
+    if (m) m.classList.add('visible');
+}
+function hideUploadProgress() {
+    if (typeof document === 'undefined') return;
+    _uploadOverlayVisible = false;
+    const m = document.getElementById('upload-progress-modal');
+    if (m) m.classList.remove('visible');
+}
+
 function setSyncStatus(state, msg) {
     if (typeof document === 'undefined') return;
+    // While the blocking upload overlay is up, mirror the push progress messages
+    // ("Envoi des images… 3/12", "Enregistrement du projet…") into it.
+    if (_uploadOverlayVisible && msg) {
+        const d = document.getElementById('upload-progress-detail');
+        if (d) d.textContent = msg;
+    }
     let el = document.getElementById('sync-pill');
     if (!el) {
         el = document.createElement('div');
@@ -2244,6 +2272,43 @@ function setSyncStatus(state, msg) {
 // un-synced after switching/importing projects).
 const _remotePushPending = new Map(); // id -> { timer, record }
 const _pushRetryCount = new Map();    // id -> consecutive failures
+
+// Run one scheduled push and handle its outcome (retry with backoff on transient
+// failure). Shared by the debounce timer and flushRemotePushNow. Resolves true
+// only when the SERVER confirmed the save.
+function _executeScheduledPush(id, rec) {
+    if (!rec) return Promise.resolve(false);
+    return RemoteStore.put(rec).then(ok => {
+        if (ok) {
+            _pushRetryCount.delete(id);
+            remoteProjectIds.add(rec.id); // track server-side existence (internal)
+            return true;
+        }
+        // A 409 is owned by the reload path (server wins + pending uploads
+        // re-applied + re-pushed there) — don't ALSO retry here.
+        if (RemoteStore._lastPutConflict) return false;
+        // Transient failure (network, server restart): retry with backoff
+        // from the FRESHEST cached copy, so an unconfirmed save can't sit
+        // silently un-synced until the next user edit.
+        const n = (_pushRetryCount.get(id) || 0) + 1;
+        _pushRetryCount.set(id, n);
+        if (n > 5) {
+            setSyncStatus('error', 'Synchronisation impossible — modifications NON enregistrées sur le serveur');
+            return false;
+        }
+        const delay = Math.min(60000, 5000 * Math.pow(2, n - 1));
+        setTimeout(() => {
+            if (_remotePushPending.has(id)) return; // a newer push got scheduled meanwhile
+            idbGetProject(id).then(fresh => {
+                if (!fresh) return;
+                const meta = projects.find(p => p.id === id);
+                scheduleRemotePush({ ...fresh, name: meta ? meta.name : (fresh.name || id) });
+            });
+        }, delay);
+        return false;
+    });
+}
+
 function scheduleRemotePush(record) {
     if (!RemoteStore.enabled() || !record || !record.id) return;
     const id = record.id;
@@ -2251,41 +2316,33 @@ function scheduleRemotePush(record) {
     entry.record = record;
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
-        const rec = entry.record;
         _remotePushPending.delete(id);
-        if (rec) RemoteStore.put(rec).then(ok => {
-            if (ok) {
-                _pushRetryCount.delete(id);
-                if (!remoteProjectIds.has(rec.id)) {
-                    remoteProjectIds.add(rec.id);
-                    updateProjectSelector(); // flip the badge to "✓ sur disque"
-                }
-                return;
-            }
-            // A 409 is owned by the reload path (server wins + pending uploads
-            // re-applied + re-pushed there) — don't ALSO retry here.
-            if (RemoteStore._lastPutConflict) return;
-            // Transient failure (network, server restart): retry with backoff
-            // from the FRESHEST cached copy, so an unconfirmed save can't sit
-            // silently un-synced until the next user edit.
-            const n = (_pushRetryCount.get(id) || 0) + 1;
-            _pushRetryCount.set(id, n);
-            if (n > 5) {
-                setSyncStatus('error', 'Synchronisation impossible — modifications NON enregistrées sur le serveur');
-                return;
-            }
-            const delay = Math.min(60000, 5000 * Math.pow(2, n - 1));
-            setTimeout(() => {
-                if (_remotePushPending.has(id)) return; // a newer push got scheduled meanwhile
-                idbGetProject(id).then(fresh => {
-                    if (!fresh) return;
-                    const meta = projects.find(p => p.id === id);
-                    scheduleRemotePush({ ...fresh, name: meta ? meta.name : (fresh.name || id) });
-                });
-            }, delay);
-        });
+        _executeScheduledPush(id, entry.record);
     }, 1500);
     _remotePushPending.set(id, entry);
+}
+
+// Fire any debounced push for `id` immediately and resolve once it completed.
+// Resolves true when nothing was pending (already in sync) or the push succeeded.
+function flushRemotePushNow(id) {
+    const entry = _remotePushPending.get(id);
+    if (!entry) return Promise.resolve(true);
+    if (entry.timer) clearTimeout(entry.timer);
+    _remotePushPending.delete(id);
+    return _executeScheduledPush(id, entry.record);
+}
+
+// Block until the server has confirmed the project's pending save. A 409 round
+// (reload + pending-upload re-apply) schedules a follow-up push — loop a few
+// rounds so that follow-up is awaited too.
+async function waitForServerConfirmation(id, maxRounds = 3) {
+    if (!RemoteStore.enabled()) return true; // no server configured — nothing to wait for
+    for (let i = 0; i < maxRounds; i++) {
+        const ok = await flushRemotePushNow(id);
+        if (ok) return true;
+        if (!_remotePushPending.has(id)) return false; // failed with no follow-up scheduled
+    }
+    return false;
 }
 
 // A save is only DONE once the server confirmed it. Warn before closing while a
@@ -2310,11 +2367,11 @@ async function syncWithRemote() {
     setSyncStatus('syncing', 'Synchronisation…');
     const serverList = await RemoteStore.list();
     if (serverList === null) {
-        console.warn('MCP project sync: server unreachable — using local cache.');
+        console.warn('MCP project sync: server unreachable.');
         // Only surface an error when the user explicitly configured a server;
         // for an auto-detected URL that simply isn't there, stay silent.
         setSyncStatus(RemoteStore.isExplicit() ? 'error' : 'idle',
-            RemoteStore.isExplicit() ? 'Serveur injoignable — cache local utilisé' : '');
+            RemoteStore.isExplicit() ? 'Serveur injoignable — modifications non enregistrées' : '');
         return;
     }
     const serverCounts = new Map(serverList.map(p => [p.id, p.screenshotCount || 0]));
@@ -2339,7 +2396,7 @@ async function syncWithRemote() {
     for (const p of projects.slice()) {
         if (serverIds.has(p.id)) continue;
         if (tombstones.has(p.id)) {
-            console.warn('Projet supprimé sur le serveur — retiré du cache local:', p.id);
+            console.warn('Projet supprimé sur le serveur — retiré localement:', p.id);
             await idbDeleteProject(p.id);
             projects = projects.filter(x => x.id !== p.id);
             const all = await getPendingUploads();
@@ -2548,15 +2605,9 @@ function updateProjectSelector() {
 
         const screenshotCount = project.id === currentProjectId ? state.screenshots.length : (project.screenshotCount || 0);
 
-        const onDisk = remoteProjectIds.has(project.id);
-        const badge = onDisk
-            ? '<span class="project-sync-badge on-disk" title="Synchronisé sur le disque du serveur">✓ sur disque</span>'
-            : '<span class="project-sync-badge local" title="Présent uniquement dans le cache du navigateur">cache local</span>';
-
         option.innerHTML = `
             <span class="project-option-name">${mcpEscapeHtml(project.name)}</span>
             <span class="project-option-right">
-                ${badge}
                 <span class="project-option-meta">${screenshotCount} screenshot${screenshotCount !== 1 ? 's' : ''}</span>
             </span>
         `;
@@ -5866,14 +5917,27 @@ function setupEventListeners() {
     bgImageUpload.addEventListener('click', () => bgImageInput.click());
     bgImageInput.addEventListener('change', (e) => {
         if (e.target.files[0]) {
+            const fileName = e.target.files[0].name;
             const reader = new FileReader();
             reader.onload = (event) => {
                 const img = new Image();
-                img.onload = () => {
+                img.onload = async () => {
                     setBackground('image', img);
                     document.getElementById('bg-image-preview').src = event.target.result;
                     document.getElementById('bg-image-preview').style.display = 'block';
                     updateCanvas();
+                    // Block until the server confirmed the background image.
+                    showUploadProgress('Enregistrement sur le serveur…', fileName);
+                    try {
+                        saveState();
+                        await waitForServerConfirmation(currentProjectId);
+                    } finally {
+                        hideUploadProgress();
+                    }
+                };
+                img.onerror = () => {
+                    _importFailures.push(fileName);
+                    reportImportFailures();
                 };
                 img.src = event.target.result;
             };
@@ -7817,8 +7881,18 @@ function handleFilesFromDesktop(filesData) {
 }
 
 async function processDesktopFilesSequentially(filesData) {
-    for (const fileData of filesData) {
-        await processDesktopImageFile(fileData);
+    if (!filesData.length) return;
+    showUploadProgress('Import des images…', '');
+    try {
+        for (let i = 0; i < filesData.length; i++) {
+            showUploadProgress('Import des images… (' + (i + 1) + '/' + filesData.length + ')', filesData[i].name || '');
+            await processDesktopImageFile(filesData[i]);
+        }
+        showUploadProgress('Enregistrement sur le serveur…', '');
+        saveState();
+        await waitForServerConfirmation(currentProjectId);
+    } finally {
+        hideUploadProgress();
     }
     await reportImportFailures();
 }
@@ -7928,8 +8002,25 @@ async function reportImportFailures() {
 }
 
 async function processFilesSequentially(files) {
-    for (const file of files) {
-        await processImageFile(file);
+    if (!files.length) return;
+    showUploadProgress('Import des images…', '');
+    try {
+        for (let i = 0; i < files.length; i++) {
+            showUploadProgress('Import des images… (' + (i + 1) + '/' + files.length + ')', files[i].name);
+            await processImageFile(files[i]);
+        }
+        // The upload is only DONE once the server confirmed it — flush the
+        // debounced save/push and keep the user waiting until the response.
+        showUploadProgress('Enregistrement sur le serveur…', '');
+        saveState();
+        const ok = await waitForServerConfirmation(currentProjectId);
+        if (!ok && RemoteStore.enabled() && !RemoteStore._lastPutConflict) {
+            if (typeof showAppAlert === 'function') {
+                await showAppAlert('L’envoi au serveur a échoué — nouvelle tentative automatique en arrière-plan.', 'error');
+            }
+        }
+    } finally {
+        hideUploadProgress();
     }
     await reportImportFailures();
 }
@@ -8551,7 +8642,7 @@ function replaceScreenshot(index) {
         const reader = new FileReader();
         reader.onload = (event) => {
             const img = new Image();
-            img.onload = () => {
+            img.onload = async () => {
                 // Get the current language
                 const lang = state.currentLanguage;
 
@@ -8574,7 +8665,18 @@ function replaceScreenshot(index) {
                 // Update displays
                 updateScreenshotList();
                 updateCanvas();
-                saveState();
+                // Block until the server confirmed the replacement.
+                showUploadProgress('Enregistrement sur le serveur…', file.name);
+                try {
+                    saveState();
+                    await waitForServerConfirmation(currentProjectId);
+                } finally {
+                    hideUploadProgress();
+                }
+            };
+            img.onerror = () => {
+                _importFailures.push(file.name);
+                reportImportFailures();
             };
             img.src = event.target.result;
         };
