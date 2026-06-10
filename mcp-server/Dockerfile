@@ -39,6 +39,11 @@ COPY assets ./assets
 # HTTP transport by default (override CMD for stdio).
 ENV MCP_TRANSPORT=http
 ENV PORT=3000
+# In a container, the project store MUST be on a mounted volume — otherwise every
+# redeploy wipes all projects. With this flag the server detects a non-mounted
+# store and refuses writes (HTTP 507) instead of accepting doomed data.
+# Override with REQUIRE_PERSISTENT_STORE=0 for throwaway/test runs.
+ENV REQUIRE_PERSISTENT_STORE=1
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

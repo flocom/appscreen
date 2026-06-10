@@ -37,6 +37,40 @@ async function ensureDir(): Promise<void> {
   dirReady = true;
 }
 
+// ---------- Persistence guard ----------
+// THE data-loss failure mode in production: the container runs WITHOUT a volume
+// mounted at the project store, so every redeploy silently wipes all projects.
+// With REQUIRE_PERSISTENT_STORE=1 (set in the Docker image; absent in dev) the
+// server detects this — a mounted volume (bind or named) lives on a different
+// device than the container's root overlay — and REFUSES writes loudly instead
+// of accepting data into a store that the next redeploy will destroy.
+let ephemeralStore = false;
+export function storeIsEphemeral(): boolean { return ephemeralStore; }
+export const EPHEMERAL_STORE_MSG =
+  "STOCKAGE NON PERSISTANT: le dossier des projets n'est pas sur un volume monté — " +
+  "toute donnée serait perdue au prochain redéploiement. Montez un volume sur " +
+  "APPSCREEN_PROJECTS_DIR (voir docker-compose.prod.yml) puis redémarrez.";
+
+export async function checkStorePersistence(): Promise<boolean> {
+  if (process.env.REQUIRE_PERSISTENT_STORE !== "1") return true;
+  try {
+    await ensureDir();
+    const dirStat = await stat(PROJECTS_DIR);
+    const rootStat = await stat("/");
+    ephemeralStore = dirStat.dev === rootStat.dev;
+  } catch {
+    ephemeralStore = false; // can't tell — don't block
+  }
+  if (ephemeralStore) {
+    console.error(`[appscreen-mcp] FATAL: ${EPHEMERAL_STORE_MSG} (dir: ${PROJECTS_DIR})`);
+  }
+  return !ephemeralStore;
+}
+
+function assertWritableStore(): void {
+  if (ephemeralStore) throw new Error(EPHEMERAL_STORE_MSG);
+}
+
 // ids come from the app (`default`, `project_<ts>`) or a tool. Keep them to a
 // filesystem-safe charset so they can never escape PROJECTS_DIR.
 function safeId(id: string): string {
@@ -90,6 +124,7 @@ export async function blobExists(name: string): Promise<boolean> {
   } catch { return false; }
 }
 export async function putBlob(name: string, buf: Buffer): Promise<void> {
+  assertWritableStore();
   await ensureBlobsDir();
   const clean = safeBlobName(name);
   // Blob names are content-addressed: the first 40 hex chars of the bytes'
@@ -472,6 +507,7 @@ export async function saveProject(
   rec: ProjectRecord,
   opts: { baseRev?: number } = {},
 ): Promise<ProjectRecord> {
+  assertWritableStore();
   await ensureDir();
   if (!rec || !rec.id) throw new Error("project record needs an id");
   rec.id = safeId(rec.id);
@@ -506,6 +542,7 @@ export async function saveProject(
 }
 
 export async function deleteProject(id: string): Promise<boolean> {
+  assertWritableStore();
   await ensureDir();
   // Serialized with all other writers to this id, so a concurrent mutate can't
   // resurrect the file mid-delete. The lock lives HERE and nowhere else for
