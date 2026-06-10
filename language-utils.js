@@ -193,6 +193,10 @@ function addLocalizedImage(screenshotIndex, lang, image, src, name) {
         name: name
     };
 
+    // Pending-upload ledger (app.js): the file is only "saved" once the server
+    // has confirmed both its bytes and the record referencing it.
+    if (typeof trackPendingUpload === 'function') trackPendingUpload(lang, name, src);
+
     // Auto-add language to project if not already present
     if (!state.projectLanguages.includes(lang)) {
         addProjectLanguage(lang);

@@ -43,6 +43,8 @@ import {
   missingBlobs,
   gcBlobs,
   readRev,
+  verifyBlobRefs,
+  listTombstones,
 } from "./projectstore.js";
 import { outputPathFor, OUTPUT_DIR } from "./security.js";
 
@@ -1049,7 +1051,18 @@ async function runHttp(port: number) {
           }
           return saveProject(rec, { baseRev });
         });
-        res.json({ ok: true, id: saved.id, rev: saved.rev, updatedAt: saved.updatedAt });
+        // Verify every image the saved record references actually exists on disk
+        // (restoring from the GC trash when possible). The client surfaces any
+        // missing ones and re-uploads the bytes it still holds — a dangling
+        // reference can never go silently unnoticed again.
+        const verify = await verifyBlobRefs(saved);
+        if (verify.missing.length) {
+          console.warn(`[appscreen-mcp] project ${saved.id}: ${verify.missing.length}/${verify.total} referenced blob(s) missing:`, verify.missing.join(", "));
+        }
+        res.json({
+          ok: true, id: saved.id, rev: saved.rev, updatedAt: saved.updatedAt,
+          imageRefs: verify.total, missingRefs: verify.missing,
+        });
       } catch (e: any) {
         if (e instanceof ConflictError) {
           res.status(409).json({ error: "conflict", rev: e.currentRev });
@@ -1096,6 +1109,17 @@ async function runHttp(port: number) {
         projectEvents.off("saved", onSaved);
         projectEvents.off("deleted", onDeleted);
       });
+    });
+
+    // Authoritative deletions: ids of recently-deleted projects. The web app
+    // checks this before migrating cache-only projects up, so a stale browser
+    // cache can never resurrect a project deleted on the server.
+    app.get(`${p}/tombstones`, async (_req, res) => {
+      try {
+        res.json({ ids: Object.keys(await listTombstones()) });
+      } catch (e: any) {
+        res.status(500).json({ error: String(e?.message ?? e) });
+      }
     });
 
     app.get(`${p}/health`, (_req, res) => res.json({ ok: true }));

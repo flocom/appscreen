@@ -80,7 +80,14 @@ const extFromMime = (m: string) =>
   (m.split("/")[1] || "png").replace("jpeg", "jpg").replace("svg+xml", "svg");
 
 export async function blobExists(name: string): Promise<boolean> {
-  try { await stat(join(BLOBS_DIR, safeBlobName(name))); return true; } catch { return false; }
+  const safe = safeBlobName(name);
+  try { await stat(join(BLOBS_DIR, safe)); return true; } catch { /* try the trash */ }
+  // GC may have trashed it while unreferenced; someone is about to reference it
+  // again (blobs/check before a push, PUT verification) — restore it.
+  try {
+    await rename(join(PROJECTS_DIR, ".blobs-trash", safe), join(BLOBS_DIR, safe));
+    return true;
+  } catch { return false; }
 }
 export async function putBlob(name: string, buf: Buffer): Promise<void> {
   await ensureBlobsDir();
@@ -162,7 +169,7 @@ export async function gcBlobs(opts: { graceMs?: number } = {}): Promise<GcResult
     await ensureBlobsDir();
     // Mark: every blob name referenced by any project on disk.
     const referenced = new Set<string>();
-    const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json"));
+    const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json") && !f.startsWith("."));
     let blobFiles: string[] = [];
     try { blobFiles = await readdir(BLOBS_DIR); } catch { blobFiles = []; }
     if (files.length === 0 && blobFiles.length > 0) {
@@ -214,6 +221,72 @@ export async function gcBlobs(opts: { graceMs?: number } = {}): Promise<GcResult
   } finally {
     gcRunning = false;
   }
+}
+
+/**
+ * Verify that every blob a record references actually exists on disk (restoring
+ * from the GC trash when needed). Returned `missing` names are images the server
+ * CANNOT serve — the client surfaces them and re-uploads any bytes it still has.
+ * Runs after each save so a dangling reference can never go unnoticed.
+ */
+export async function verifyBlobRefs(rec: ProjectRecord): Promise<{ total: number; missing: string[] }> {
+  const refs = new Set<string>();
+  collectRefs(rec, refs);
+  const missing: string[] = [];
+  for (const name of refs) {
+    if (!(await blobExists(name))) missing.push(name); // blobExists restores from trash
+  }
+  return { total: refs.size, missing };
+}
+
+// ---------- Tombstones (authoritative deletions) ----------
+// The server is the source of truth: when a project is deleted here, a browser
+// whose cache still holds it must NOT "migrate" it back up on its next sync.
+// Deletions are recorded in .tombstones.json (30-day retention); the client
+// checks GET /tombstones before migrating cache-only projects. An explicit
+// create/save of the same id revives it (clears the tombstone).
+
+const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const tombstonesFile = () => join(PROJECTS_DIR, ".tombstones.json");
+
+// Tiny mutex: tombstone read-modify-writes from different projects must not race.
+let _tombChain: Promise<unknown> = Promise.resolve();
+function withTombLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = _tombChain.then(fn, fn);
+  _tombChain = run.then(() => {}, () => {});
+  return run;
+}
+
+export async function listTombstones(): Promise<Record<string, string>> {
+  try { return JSON.parse(await readFile(tombstonesFile(), "utf8")) || {}; } catch { return {}; }
+}
+
+async function writeTombstones(t: Record<string, string>): Promise<void> {
+  const tmp = tombstonesFile() + ".tmp";
+  await writeFile(tmp, JSON.stringify(t));
+  await rename(tmp, tombstonesFile());
+}
+
+function addTombstone(id: string): Promise<void> {
+  return withTombLock(async () => {
+    const t = await listTombstones();
+    const now = Date.now();
+    for (const k of Object.keys(t)) {
+      const ts = Date.parse(t[k]);
+      if (!isFinite(ts) || now - ts > TOMBSTONE_RETENTION_MS) delete t[k];
+    }
+    t[safeId(id)] = new Date().toISOString();
+    await writeTombstones(t);
+  });
+}
+
+function clearTombstone(id: string): Promise<void> {
+  return withTombLock(async () => {
+    const t = await listTombstones();
+    if (t[safeId(id)] === undefined) return;
+    delete t[safeId(id)];
+    await writeTombstones(t);
+  });
 }
 
 const isRef = (v: unknown): v is string => typeof v === "string" && v.startsWith(REF_PREFIX);
@@ -303,7 +376,7 @@ export async function listProjects(): Promise<
   { id: string; name: string; screenshotCount: number; languages: string[]; updatedAt?: string; rev: number }[]
 > {
   await ensureDir();
-  const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json"));
+  const files = (await readdir(PROJECTS_DIR)).filter((f) => f.endsWith(".json") && !f.startsWith("."));
   const out = [];
   for (const f of files) {
     try {
@@ -425,6 +498,9 @@ export async function saveProject(
   const tmp = `${final}.tmp`;
   await writeFile(tmp, JSON.stringify(rec));
   await rename(tmp, final);
+  // An explicit save of a previously-deleted id revives it — drop the tombstone
+  // so syncing browsers don't discard the revived project from their cache.
+  try { await clearTombstone(rec.id); } catch { /* best effort */ }
   projectEvents.emit("saved", { id: rec.id, rev: rec.rev }); // live-update browsers via SSE
   return rec;
 }
@@ -438,6 +514,9 @@ export async function deleteProject(id: string): Promise<boolean> {
   return withProjectLock(id, async () => {
     try {
       await rm(fileFor(id));
+      // Authoritative deletion: tombstone it so a stale browser cache can't
+      // silently migrate the project back up on its next sync.
+      try { await addTombstone(id); } catch (e) { console.warn("[appscreen-mcp] tombstone write failed:", e); }
       projectEvents.emit("deleted", { id: safeId(id) });
       return true;
     } catch {

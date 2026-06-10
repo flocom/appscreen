@@ -54,10 +54,12 @@ function assignImageFileToLanguage(file, lang) {
                 }
                 resolve();
             };
-            img.onerror = () => resolve();
+            // Surface decode failures instead of dropping the file silently
+            // (collected by reportImportFailures after the batch).
+            img.onerror = () => { if (typeof _importFailures !== 'undefined') _importFailures.push(file.name); resolve(); };
             img.src = e.target.result;
         };
-        reader.onerror = () => resolve();
+        reader.onerror = () => { if (typeof _importFailures !== 'undefined') _importFailures.push(file.name); resolve(); };
         reader.readAsDataURL(file);
     });
 }
@@ -73,6 +75,7 @@ async function uploadFilesForLanguage(lang, fileList) {
     if (typeof updateScreenshotList === 'function') updateScreenshotList();
     updateCanvas();
     saveState();
+    if (typeof reportImportFailures === 'function') await reportImportFailures();
 }
 
 // ---- Folder import (fastlane-aware): classify by sub-folder name ----
@@ -101,6 +104,7 @@ async function importFolderFiles(fileList) {
     if (typeof updateScreenshotList === 'function') updateScreenshotList();
     updateCanvas();
     saveState();
+    if (typeof reportImportFailures === 'function') await reportImportFailures();
     const total = tagged.length;
     const langs = Object.keys(byLang).map(l => `${languageFlags[l] || ''} ${languageNames[l] || l}`).join(', ');
     if (typeof showAppAlert === 'function') showAppAlert(`Imported ${total} image(s) across: ${langs}`, 'info');

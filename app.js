@@ -1480,6 +1480,180 @@ function idbPutProject(rec) {
         } catch (e) { resolve(false); }
     });
 }
+function idbDeleteProject(id) {
+    return new Promise((resolve) => {
+        if (!db || !id) return resolve(false);
+        try {
+            const tx = db.transaction([PROJECTS_STORE], 'readwrite');
+            tx.objectStore(PROJECTS_STORE).delete(id);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => resolve(false);
+        } catch (e) { resolve(false); }
+    });
+}
+function idbGetMeta(key) {
+    return new Promise((resolve) => {
+        if (!db) return resolve(null);
+        try {
+            const tx = db.transaction([META_STORE], 'readonly');
+            const rq = tx.objectStore(META_STORE).get(key);
+            rq.onsuccess = () => resolve(rq.result ? rq.result.value : null);
+            rq.onerror = () => resolve(null);
+        } catch (e) { resolve(null); }
+    });
+}
+function idbPutMeta(key, value) {
+    return new Promise((resolve) => {
+        if (!db) return resolve(false);
+        try {
+            const tx = db.transaction([META_STORE], 'readwrite');
+            tx.objectStore(META_STORE).put({ key, value });
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => resolve(false);
+        } catch (e) { resolve(false); }
+    });
+}
+
+// ===== Pending-upload ledger ===============================================
+// Guarantee: a file that enters the editor can NOT silently disappear before the
+// SERVER has confirmed it (blob present + record referencing it accepted).
+//
+// Every imported image is recorded here (persisted in IndexedDB, survives tab
+// close) and removed only on server confirmation. Whenever the app adopts the
+// server's copy of a project (the server is the source of truth: SSE update,
+// freshness reload, push conflict, startup sync), pending entries are re-applied
+// into the fresh server record and pushed again. Server truth is preserved: a
+// stale entry never overwrites a slot the server has since filled — entries only
+// complete the save of the user's own recent upload.
+const PENDING_UPLOADS_KEY = 'pendingUploads';
+const PENDING_UPLOAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // give up + warn after 7 days
+const PENDING_UPLOAD_FRESH_MS = 10 * 60 * 1000; // a fresh entry may overwrite (it's the user's latest intent)
+let _pendingUploads = null; // { [projectId]: [{ lang, name, base, src, ts }] }
+
+async function getPendingUploads() {
+    if (_pendingUploads === null) _pendingUploads = (await idbGetMeta(PENDING_UPLOADS_KEY)) || {};
+    return _pendingUploads;
+}
+function persistPendingUploads() {
+    if (_pendingUploads !== null) idbPutMeta(PENDING_UPLOADS_KEY, _pendingUploads);
+}
+
+// Record an image that just entered the editor (called from every import path).
+function trackPendingUpload(lang, name, src) {
+    if (!src || typeof src !== 'string' || !src.startsWith('data:image/')) return;
+    const l = lang || 'en';
+    const pid = currentProjectId; // capture now — the user may switch projects before the IDB read returns
+    getPendingUploads().then(all => {
+        const list = all[pid] = all[pid] || [];
+        const base = (typeof getBaseFilename === 'function') ? getBaseFilename(name || '') : (name || '');
+        const entry = { lang: l, name: name || '', base, src, ts: Date.now() };
+        const i = list.findIndex(e => e.base === base && e.lang === l);
+        if (i >= 0) list[i] = entry; else list.push(entry);
+        persistPendingUploads();
+    }).catch(() => {});
+}
+
+// After a successful push: drop every entry whose slot landed in the accepted
+// record with its blob verified present (not in missingRefs).
+function confirmPendingUploads(projectId, refRecord, missingRefs) {
+    getPendingUploads().then(all => {
+        const list = all[projectId];
+        if (!list || !list.length) return;
+        const missing = new Set(missingRefs || []);
+        const slots = new Map(); // "base\u0000lang" -> src in the accepted record
+        (refRecord.screenshots || []).forEach(s => {
+            const b = (typeof getBaseFilename === 'function') ? getBaseFilename(s.name || '') : (s.name || '');
+            const li = s.localizedImages || {};
+            Object.keys(li).forEach(lang => {
+                if (li[lang] && li[lang].src) slots.set(b + '\u0000' + lang, li[lang].src);
+            });
+        });
+        const before = list.length;
+        const kept = list.filter(e => {
+            if (Date.now() - e.ts > PENDING_UPLOAD_MAX_AGE_MS) return false; // aged out
+            const src = slots.get(e.base + '\u0000' + e.lang);
+            if (!src) return true; // slot absent from the accepted record — still pending
+            if (typeof src === 'string' && src.startsWith(REF_SCHEME) && missing.has(src.slice(REF_SCHEME.length))) {
+                return true; // record accepted but the blob is missing server-side — still pending
+            }
+            return false; // confirmed on the server → done
+        });
+        if (kept.length !== before) {
+            if (kept.length) all[projectId] = kept; else delete all[projectId];
+            persistPendingUploads();
+        }
+    }).catch(() => {});
+}
+
+// Re-apply pending entries into a (fresh-from-server) project record. Pure data
+// operation — no DOM, no Image decoding — so it also works for closed projects.
+// Server-truth rule: an entry only fills an EMPTY slot, unless it is FRESH
+// (uploaded minutes ago — the user's own replacement that must not be lost).
+// Returns { changed, keep }: keep = entries still awaiting confirmation.
+function applyPendingUploadsToRecord(rec, list) {
+    let changed = false;
+    const now = Date.now();
+    const keep = [];
+    for (const e of (list || [])) {
+        if (now - e.ts > PENDING_UPLOAD_MAX_AGE_MS) {
+            console.warn('Upload en attente abandonné (trop ancien):', e.name, e.lang);
+            continue;
+        }
+        let s = null;
+        for (const sc of (rec.screenshots || [])) {
+            const b = (typeof getBaseFilename === 'function') ? getBaseFilename(sc.name || '') : (sc.name || '');
+            if (b === e.base) { s = sc; break; }
+        }
+        if (!s) {
+            // The screenshot this upload created doesn't exist server-side → recreate
+            // it from the project defaults (same shape as createNewScreenshot).
+            const d = rec.defaults || {};
+            const clone = (o) => o ? JSON.parse(JSON.stringify(o)) : undefined;
+            s = {
+                src: '', name: e.name || e.base, deviceType: undefined, localizedImages: {},
+                background: clone(d.background), screenshot: clone(d.screenshot), text: clone(d.text),
+                elements: [], popouts: [], overrides: {}
+            };
+            rec.screenshots = rec.screenshots || [];
+            rec.screenshots.push(s);
+        }
+        s.localizedImages = s.localizedImages || {};
+        const slot = s.localizedImages[e.lang];
+        const fresh = (now - e.ts) < PENDING_UPLOAD_FRESH_MS;
+        if (slot && slot.src && !fresh) continue; // server's copy wins for stale entries
+        if (!slot || !slot.src || slot.src !== e.src) {
+            s.localizedImages[e.lang] = { src: e.src, name: e.name || e.base };
+            changed = true;
+        }
+        keep.push(e); // pending until a push confirms it
+    }
+    return { changed, keep };
+}
+
+// Re-apply + push the pending entries of one project (record-level). Returns true
+// if a push was scheduled.
+async function reapplyPendingUploads(projectId) {
+    try {
+        const all = await getPendingUploads();
+        const list = all[projectId];
+        if (!list || !list.length) return false;
+        const rec = await idbGetProject(projectId);
+        if (!rec) return false;
+        const res = applyPendingUploadsToRecord(rec, list);
+        if (res.keep.length) all[projectId] = res.keep; else delete all[projectId];
+        persistPendingUploads();
+        if (res.changed) {
+            await idbPutProject(rec);
+            const meta = projects.find(p => p.id === projectId);
+            scheduleRemotePush({ ...rec, name: meta ? meta.name : (rec.name || projectId) });
+            return true;
+        }
+        return false;
+    } catch (e) {
+        console.warn('Ré-application des uploads en attente échouée:', e);
+        return false;
+    }
+}
 
 // Re-encode a (PNG/WebP) data URL to JPEG to save disk space before syncing.
 // Skips vector/animated formats and already-JPEG/non-data inputs, and keeps the
@@ -1844,6 +2018,7 @@ const RemoteStore = {
     async _put(record) {
         const b = this.baseUrl(); if (!b || !record || !record.id) return false;
         const id = encodeURIComponent(record.id);
+        this._lastPutConflict = false;
         _remotePushInFlight = true;
         try {
             setSyncStatus('syncing', 'Préparation des images…');
@@ -1894,21 +2069,25 @@ const RemoteStore = {
                 method: 'PUT', headers, body: JSON.stringify(refRecord)
             });
             if (r.status === 409) {
-                // The server has newer data than this tab was based on (e.g. Claude/MCP
-                // pushed while we were idle). Don't clobber it — reload the server copy.
-                setSyncStatus('syncing', 'Projet modifié ailleurs — rechargement…');
+                // Someone else (Claude/MCP, another tab) wrote a newer revision.
+                // The SERVER is the source of truth: adopt its copy. Pending uploads
+                // are NOT lost — reloadProjectFromServer re-applies the ledger into
+                // the fresh server record and schedules their push.
+                this._lastPutConflict = true;
+                setSyncStatus('syncing', 'Projet modifié ailleurs — synchronisation…');
                 await reloadProjectFromServer(record.id);
-                setSyncStatus('ok', 'Rechargé (modifié par Claude/MCP)');
+                setSyncStatus('ok', 'Synchronisé depuis le serveur');
                 return false;
             }
             if (r.ok) {
                 // Now confirmed on the server → these images can be stored as refs
                 // (bytes dropped from IndexedDB on the next save).
                 for (const [dataUrl, name] of refs) refCache.set(dataUrl, name);
-                // Adopt the new revision so our next push isn't seen as stale.
+                let missingRefs = [];
                 try {
                     const j = await r.json();
                     if (j && typeof j.rev === 'number') {
+                        // Adopt the new revision so our next push isn't seen as stale.
                         remoteRev.set(record.id, j.rev);
                         if (record.id === currentProjectId) currentProjectRev = j.rev;
                         // Persist the COMMITTED rev into IndexedDB. Without this the
@@ -1917,7 +2096,28 @@ const RemoteStore = {
                         // falsely report "modifié ailleurs".
                         persistCommittedRev(record.id, j.rev);
                     }
+                    if (j && Array.isArray(j.missingRefs)) missingRefs = j.missingRefs;
                 } catch (e) { /* response without body — ignore */ }
+
+                // The server verified every image reference of the accepted record.
+                // If any blob is missing on its disk, re-upload the bytes we still
+                // hold (this session's push, or the resolved-blob cache) — and warn
+                // LOUDLY about anything we cannot repair: silence is how images
+                // used to "disappear".
+                if (missingRefs.length) {
+                    const still = await this._healMissingBlobs(record.id, missingRefs, refs);
+                    if (still.length) {
+                        const labels = labelRefsInRecord(refRecord, still);
+                        console.warn('Images référencées introuvables sur le serveur:', still, labels);
+                        setSyncStatus('error', '⚠ ' + still.length + ' image(s) introuvable(s) sur le serveur'
+                            + (labels.length ? ' — ' + labels.slice(0, 3).join(', ') + (labels.length > 3 ? '…' : '') : ''));
+                    } else {
+                        setSyncStatus('ok', 'Enregistré (images réparées sur le serveur)');
+                    }
+                    confirmPendingUploads(record.id, refRecord, still);
+                    return true;
+                }
+                confirmPendingUploads(record.id, refRecord, []);
             }
             setSyncStatus(r.ok ? 'ok' : 'error', r.ok ? 'Enregistré sur le disque' : 'Échec de l’enregistrement (HTTP ' + r.status + ')');
             return r.ok;
@@ -1929,6 +2129,29 @@ const RemoteStore = {
             _remotePushInFlight = false;
         }
     },
+    // Re-upload blobs the server reported missing, from any bytes this browser
+    // still holds: this push's dataUrl→name map, or the session blob cache
+    // (name→dataUrl, filled whenever a ref was resolved for display). Returns
+    // the names that could NOT be repaired.
+    async _healMissingBlobs(projectId, missingNames, pushRefs) {
+        const b = this.baseUrl(); if (!b) return missingNames;
+        const byName = new Map();
+        try { for (const [dataUrl, name] of (pushRefs || [])) byName.set(name, dataUrl); } catch (e) {}
+        try { for (const [name, dataUrl] of blobDataUrlCache) if (!byName.has(name)) byName.set(name, dataUrl); } catch (e) {}
+        const stillMissing = [];
+        for (const name of missingNames) {
+            const dataUrl = byName.get(name);
+            if (!dataUrl) { stillMissing.push(name); continue; }
+            try {
+                const { bytes, mime } = dataUrlToBytes(dataUrl);
+                const r = await fetch(b + '/projects/' + encodeURIComponent(projectId) + '/blobs/' + name, {
+                    method: 'PUT', headers: { ...this._headers(false), 'Content-Type': mime }, body: bytes
+                });
+                if (!r.ok) stillMissing.push(name);
+            } catch (e) { stillMissing.push(name); }
+        }
+        return stillMissing;
+    },
     async del(id) {
         const b = this.baseUrl(); if (!b) return false;
         try {
@@ -1937,6 +2160,27 @@ const RemoteStore = {
         } catch (e) { return false; }
     },
 };
+
+// Human labels ("screen-3.png (de)") for blob refs inside a record — so a warning
+// about a missing image tells the user WHICH screenshot/language is affected.
+function labelRefsInRecord(refRecord, names) {
+    const wanted = new Set(names || []);
+    const labels = [];
+    (refRecord.screenshots || []).forEach((s, i) => {
+        const li = s.localizedImages || {};
+        Object.keys(li).forEach(lang => {
+            const src = li[lang] && li[lang].src;
+            if (typeof src === 'string' && src.startsWith(REF_SCHEME) && wanted.has(src.slice(REF_SCHEME.length))) {
+                labels.push((s.name || ('Screen ' + (i + 1))) + ' (' + lang + ')');
+            }
+        });
+        const bg = s.background && s.background.image;
+        if (typeof bg === 'string' && bg.startsWith(REF_SCHEME) && wanted.has(bg.slice(REF_SCHEME.length))) {
+            labels.push('fond de ' + (s.name || ('Screen ' + (i + 1))));
+        }
+    });
+    return labels;
+}
 
 // Persist the server-committed rev into the cached IndexedDB record (rev only),
 // so a later reload/switch restores the correct base rev and doesn't mistake our
@@ -1999,6 +2243,7 @@ function setSyncStatus(state, msg) {
 // push (a single shared timer used to drop A's push entirely — data could be left
 // un-synced after switching/importing projects).
 const _remotePushPending = new Map(); // id -> { timer, record }
+const _pushRetryCount = new Map();    // id -> consecutive failures
 function scheduleRemotePush(record) {
     if (!RemoteStore.enabled() || !record || !record.id) return;
     const id = record.id;
@@ -2009,13 +2254,52 @@ function scheduleRemotePush(record) {
         const rec = entry.record;
         _remotePushPending.delete(id);
         if (rec) RemoteStore.put(rec).then(ok => {
-            if (ok && !remoteProjectIds.has(rec.id)) {
-                remoteProjectIds.add(rec.id);
-                updateProjectSelector(); // flip the badge to "✓ sur disque"
+            if (ok) {
+                _pushRetryCount.delete(id);
+                if (!remoteProjectIds.has(rec.id)) {
+                    remoteProjectIds.add(rec.id);
+                    updateProjectSelector(); // flip the badge to "✓ sur disque"
+                }
+                return;
             }
+            // A 409 is owned by the reload path (server wins + pending uploads
+            // re-applied + re-pushed there) — don't ALSO retry here.
+            if (RemoteStore._lastPutConflict) return;
+            // Transient failure (network, server restart): retry with backoff
+            // from the FRESHEST cached copy, so an unconfirmed save can't sit
+            // silently un-synced until the next user edit.
+            const n = (_pushRetryCount.get(id) || 0) + 1;
+            _pushRetryCount.set(id, n);
+            if (n > 5) {
+                setSyncStatus('error', 'Synchronisation impossible — modifications NON enregistrées sur le serveur');
+                return;
+            }
+            const delay = Math.min(60000, 5000 * Math.pow(2, n - 1));
+            setTimeout(() => {
+                if (_remotePushPending.has(id)) return; // a newer push got scheduled meanwhile
+                idbGetProject(id).then(fresh => {
+                    if (!fresh) return;
+                    const meta = projects.find(p => p.id === id);
+                    scheduleRemotePush({ ...fresh, name: meta ? meta.name : (fresh.name || id) });
+                });
+            }, delay);
         });
     }, 1500);
     _remotePushPending.set(id, entry);
+}
+
+// A save is only DONE once the server confirmed it. Warn before closing while a
+// push is queued/in flight or uploads await confirmation (everything is still in
+// IndexedDB and resumes on next open — but other devices/Claude won't see it yet).
+if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', (e) => {
+        let pendingUploads = false;
+        try { pendingUploads = !!(_pendingUploads && Object.keys(_pendingUploads).length); } catch (err) {}
+        if (_remotePushPending.size > 0 || _remotePushInFlight || pendingUploads) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
 }
 
 // Migrate browser-only projects up to the server, then hydrate server projects
@@ -2036,64 +2320,57 @@ async function syncWithRemote() {
     const serverCounts = new Map(serverList.map(p => [p.id, p.screenshotCount || 0]));
     const serverIds = new Set(serverList.map(p => p.id));
 
-    // 1) Migrate any project that only exists in the browser cache.
-    for (const p of projects) {
-        if (!serverIds.has(p.id)) {
-            const rec = await idbGetProject(p.id);
-            if (rec) {
-                const okPush = await RemoteStore.put({ ...rec, name: p.name });
-                if (okPush) serverIds.add(p.id);
-            }
+    // THE SERVER IS THE SOURCE OF TRUTH. The cache never argues with it:
+    //  - deletions are authoritative (tombstones) — the cache drops them;
+    //  - server content replaces the cache whenever revisions differ;
+    //  - the cache only fills a real gap: projects the server has never seen.
+    // The user's own uploads are protected separately by the pending-upload
+    // ledger (re-applied below), never by cache-vs-server heuristics.
+
+    // 0) Authoritative deletions: ids deleted on the server recently.
+    let tombstones = new Set();
+    try {
+        const r = await fetch(RemoteStore.baseUrl() + '/tombstones', { headers: RemoteStore._headers(false) });
+        if (r.ok) tombstones = new Set(((await r.json()).ids) || []);
+    } catch (e) { /* older server / network blip — treat as none */ }
+
+    // 1) Cache-only projects: tombstoned → deleted on the server, drop the cached
+    //    copy; otherwise it's a project the server never had → save it up.
+    for (const p of projects.slice()) {
+        if (serverIds.has(p.id)) continue;
+        if (tombstones.has(p.id)) {
+            console.warn('Projet supprimé sur le serveur — retiré du cache local:', p.id);
+            await idbDeleteProject(p.id);
+            projects = projects.filter(x => x.id !== p.id);
+            const all = await getPendingUploads();
+            if (all[p.id]) { delete all[p.id]; persistPendingUploads(); }
+            continue;
+        }
+        const rec = await idbGetProject(p.id);
+        if (rec) {
+            const okPush = await RemoteStore.put({ ...rec, name: p.name });
+            if (okPush) serverIds.add(p.id);
         }
     }
+    if (!projects.find(p => p.id === currentProjectId) && projects.length) {
+        currentProjectId = projects[0].id;
+    }
 
-    // 2) Reconcile each server project with the local copy. CRITICAL: never let an
-    //    emptier server record clobber a richer local one — instead repair the
-    //    server from the local copy. This protects good data from a transient bad
-    //    (e.g. mid-load, empty) push that may have reached the server.
+    // 2) Server projects: the server's copy replaces the cache whenever the
+    //    revision differs (newer OR older — e.g. restored from a backup). Equal
+    //    revision = identical content → keep the cache, skip the download.
     const merged = projects.slice();
     for (const sp of serverList) {
         const local = await idbGetProject(sp.id);
-        const localCount = local?.screenshots?.length || 0;
-        const serverCount = serverCounts.get(sp.id) || 0;
-        // null = the cached record predates the rev feature (unknown base), which
-        // must NOT compare as rev 0: a wiped/remounted server store restarts revs
-        // at 1, and "1 > 0" would let an emptier server record clobber a richer
-        // local cache. Unknown rev → fall back to the count heuristics below.
         const localRev = (local && typeof local.rev === 'number') ? local.rev : null;
         const serverRev = (typeof sp.rev === 'number') ? sp.rev : 0;
-        let count = serverCount;
-        if (!local) {
-            // Not in this browser yet — pull it down.
-            const rec = await RemoteStore.get(sp.id);
-            if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
-        } else if (localRev !== null && serverRev > localRev) {
-            // Server revision is newer (e.g. Claude/MCP wrote) → pull it down, even
-            // if the screenshot count is the same or lower. The rev is authoritative,
-            // so this can't be clobbered by the count heuristic below.
-            const rec = await RemoteStore.get(sp.id);
-            if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
-        } else if (localRev !== null && localRev > serverRev) {
-            // This browser holds a newer revision than the server — push it up.
-            const meta = projects.find(p => p.id === sp.id);
-            await RemoteStore.put({ ...local, name: meta ? meta.name : sp.name });
-            count = localCount;
-        } else if (localCount > serverCount) {
-            // Local is richer — repair the server, keep local (no big download).
-            const meta = projects.find(p => p.id === sp.id);
-            await RemoteStore.put({ ...local, name: meta ? meta.name : sp.name });
-            count = localCount;
-        } else if (serverCount > localCount) {
-            // Server has more — pull it down.
-            const rec = await RemoteStore.get(sp.id);
-            if (rec && (rec.screenshots?.length || 0) >= localCount) {
-                await idbPutProject(rec);
-                count = rec.screenshots?.length || 0;
-            }
+        let count = serverCounts.get(sp.id) || 0;
+        if (local && localRev === serverRev) {
+            count = local.screenshots?.length || count; // same revision — no download needed
         } else {
-            // Same count and already present locally → keep local, skip the
-            // (potentially large) download. Big load-time win for image-heavy projects.
-            count = localCount;
+            const rec = await RemoteStore.get(sp.id);
+            if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
+            else if (local) count = local.screenshots?.length || count; // fetch failed — keep cache until next sync
         }
         const existing = merged.find(p => p.id === sp.id);
         if (existing) { existing.name = sp.name; existing.screenshotCount = count; }
@@ -2102,6 +2379,18 @@ async function syncWithRemote() {
     projects = merged;
     remoteProjectIds = serverIds; // every id here now exists on the server's disk
     saveProjectsMeta();
+
+    // 3) Resume interrupted uploads: any image imported before the tab closed but
+    //    never server-confirmed is re-applied onto the fresh server state and
+    //    pushed now (for every project, even ones not open in the editor).
+    try {
+        const all = await getPendingUploads();
+        for (const pid of Object.keys(all)) {
+            if (!serverIds.has(pid) && tombstones.has(pid)) { delete all[pid]; persistPendingUploads(); continue; }
+            await reapplyPendingUploads(pid);
+        }
+    } catch (e) { console.warn('Reprise des uploads en attente échouée:', e); }
+
     setSyncStatus('ok', 'Synchronisé');
     startRemoteEventStream(); // (re)open the live update stream now the server is reachable
 }
@@ -2114,6 +2403,23 @@ async function reloadProjectFromServer(id) {
     if (!RemoteStore.enabled() || !id) return false;
     const rec = await RemoteStore.get(id); // also updates remoteRev[id]
     if (!rec) return false;
+    // Re-apply any not-yet-server-confirmed uploads into the fresh server copy
+    // BEFORE it reaches the editor. The server stays the source of truth for
+    // everything else; this only completes the save of the user's own files
+    // (they must never disappear because Claude/MCP wrote in between).
+    try {
+        const all = await getPendingUploads();
+        const list = all[id];
+        if (list && list.length) {
+            const res = applyPendingUploadsToRecord(rec, list);
+            if (res.keep.length) all[id] = res.keep; else delete all[id];
+            persistPendingUploads();
+            if (res.changed) {
+                const meta = projects.find(p => p.id === id);
+                scheduleRemotePush({ ...rec, name: meta ? meta.name : (rec.name || id) });
+            }
+        }
+    } catch (e) { console.warn('Ré-application des uploads en attente échouée:', e); }
     await idbPutProject(rec); // refs record; loadState resolves blobs on demand
     if (id === currentProjectId) {
         _reloadingFromServer = true;
@@ -3133,6 +3439,10 @@ async function deleteProject() {
     // Delete on the server too (no-op if not configured).
     RemoteStore.del(deletedId);
     remoteProjectIds.delete(deletedId);
+    // Its pending uploads are moot now.
+    getPendingUploads().then(all => {
+        if (all[deletedId]) { delete all[deletedId]; persistPendingUploads(); }
+    }).catch(() => {});
 
     // Switch to first available project (without saving the deleted one)
     saveProjectsMeta();
@@ -7510,6 +7820,7 @@ async function processDesktopFilesSequentially(filesData) {
     for (const fileData of filesData) {
         await processDesktopImageFile(fileData);
     }
+    await reportImportFailures();
 }
 
 // Import screenshots via Tauri native file dialog
@@ -7591,14 +7902,36 @@ async function processDesktopImageFile(fileData) {
             updateCanvas();
             resolve();
         };
+        // Same decode-failure guard as processImageFile: never hang the batch.
+        img.onerror = () => {
+            _importFailures.push(fileData.name || 'image');
+            resolve();
+        };
         img.src = fileData.dataUrl;
     });
+}
+
+// Files whose import failed (unreadable / undecodable — e.g. HEIC in some
+// browsers). Collected per batch and surfaced: a file that never made it into
+// the project must NEVER fail silently.
+let _importFailures = [];
+
+async function reportImportFailures() {
+    if (!_importFailures.length) return;
+    const list = _importFailures.slice();
+    _importFailures = [];
+    const msg = list.length === 1
+        ? 'Ce fichier n’a pas pu être importé (format non supporté ?) : ' + list[0]
+        : list.length + ' fichiers n’ont pas pu être importés (format non supporté ?) : ' + list.join(', ');
+    console.warn('Import failures:', list);
+    if (typeof showAppAlert === 'function') await showAppAlert(msg, 'error');
 }
 
 async function processFilesSequentially(files) {
     for (const file of files) {
         await processImageFile(file);
     }
+    await reportImportFailures();
 }
 
 async function processImageFile(file) {
@@ -7658,7 +7991,18 @@ async function processImageFile(file) {
                 updateCanvas();
                 resolve();
             };
+            // CRITICAL: without onerror, one undecodable file (HEIC, corrupt…)
+            // left this promise pending FOREVER and silently swallowed every
+            // remaining file of the batch — "files disappearing" at import time.
+            img.onerror = () => {
+                _importFailures.push(file.name);
+                resolve();
+            };
             img.src = e.target.result;
+        };
+        reader.onerror = () => {
+            _importFailures.push(file.name);
+            resolve();
         };
         reader.readAsDataURL(file);
     });
@@ -7672,6 +8016,8 @@ function createNewScreenshot(img, src, name, lang, deviceType) {
             src: src,
             name: name
         };
+        // Pending-upload ledger: this file is only "saved" once the server confirms it.
+        if (typeof trackPendingUpload === 'function') trackPendingUpload(lang || 'en', name, src);
     }
 
     // Auto-add language to project if not already present
@@ -8219,6 +8565,8 @@ function replaceScreenshot(index) {
                     src: event.target.result,
                     name: file.name
                 };
+                // Pending-upload ledger: a replacement must not be lost either.
+                if (typeof trackPendingUpload === 'function') trackPendingUpload(lang, file.name, event.target.result);
 
                 // Also update legacy image field for compatibility
                 screenshot.image = img;
