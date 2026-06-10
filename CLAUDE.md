@@ -22,7 +22,7 @@ App Store Screenshot Generator - a browser-based tool for creating App Store mar
 
 ## Development
 
-To run locally, serve via a web server (required for IndexedDB persistence):
+To run locally, serve via a web server:
 
 ```bash
 python3 -m http.server 8000
@@ -30,7 +30,7 @@ python3 -m http.server 8000
 npx serve .
 ```
 
-Open `http://localhost:8000` in browser. Opening `index.html` directly from filesystem will break persistence.
+Open `http://localhost:8000` in browser. Persistence requires a running MCP server (the server's disk is the only project store — without it the editor works in-memory only and nothing survives a reload).
 
 ## Architecture
 
@@ -51,11 +51,10 @@ Open `http://localhost:8000` in browser. Opening `index.html` directly from file
 **Key patterns in app.js:**
 
 - `state` object at top holds all application state (screenshots, settings, text, background config)
-- `updateCanvas()` is the main render function - call after any state change
-- `saveState()` persists to IndexedDB, called automatically in `updateCanvas()`
+- `updateCanvas()` is the main render function - call after any state change (renders are coalesced to one per animation frame)
+- `saveState()` pushes to the MCP server (debounced via `scheduleRemotePush()`), called automatically in `updateCanvas()`
 - `syncUIWithState()` updates all UI controls to reflect current state
-- Project management uses IndexedDB with two stores: `projects` (data) and `meta` (project list)
-- When an MCP server is configured (Settings → MCP Server), projects also persist to the **server's disk**, which becomes the shared source of truth: on startup/connect, `syncWithRemote()` migrates browser-only projects up to the server (`PUT /projects/:id`) and hydrates server projects back into IndexedDB; `saveState()` mirrors saves via `scheduleRemotePush()`. IndexedDB stays as the offline cache. `RemoteStore` is the REST client; heavy raster images (screenshots + background) are JPEG-compressed by `buildRemotePayload()` before upload. The server side lives in `mcp-server/src/projectstore.ts` with MCP tools + REST endpoints in `server.ts`.
+- **STORAGE IS SERVER-ONLY**: the MCP server's disk (`mcp-server/src/projectstore.ts`, MCP tools + REST endpoints in `server.ts`) is the one and only project store — a project is on the server or it doesn't exist. The browser persists nothing but the current-project id (localStorage); the legacy IndexedDB mirror is deleted at startup. `syncWithRemote()` loads the project list, `loadState()` fetches the open project (`RemoteStore` is the REST client), and every change is pushed back with optimistic concurrency (`rev` + If-Match; 409 → the server copy is reloaded). Live updates arrive over SSE (`/events`). Uploads are guarded by a blocking overlay + an in-memory pending-upload ledger until the server confirms them; heavy raster images are JPEG-compressed and uploaded as content-addressed binary blobs (`externalizeForUpload()`).
 - Per-screenshot settings: each screenshot stores its own background, device, and text settings
 - Undo/redo: `captureHistoryState()`/`historyFingerprint()` snapshot serializable state (transient image fields excluded); `recordHistoryDebounced()` is driven by `saveState()`; `resetHistory()` re-baselines after a project finishes hydrating (`checkAllLoaded()`); Ctrl+Z / Ctrl+Shift+Z shortcuts skip text inputs and open modals
 
