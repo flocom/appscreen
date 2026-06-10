@@ -2,15 +2,25 @@ name: Build and Publish MCP Server Image
 
 # Publishes the appscreen MCP server image to GHCR on every push to main, so a
 # server running Watchtower auto-deploys it (see docker-compose.prod.yml).
+#
+# PATH-FILTERED: only runs when the MCP server actually changed. Rebuilding on
+# every merge made Watchtower restart the MCP container after web-only changes
+# too — killing in-flight uploads for nothing.
 on:
   push:
     branches:
       - main
     tags:
       - "v*"
+    paths:
+      - "mcp-server/**"
+      - ".github/workflows/docker-publish-mcp.yml"
   pull_request:
     branches:
       - main
+    paths:
+      - "mcp-server/**"
+      - ".github/workflows/docker-publish-mcp.yml"
   workflow_dispatch: {}
 
 env:

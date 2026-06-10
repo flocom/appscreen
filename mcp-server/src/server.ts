@@ -45,6 +45,9 @@ import {
   readRev,
   verifyBlobRefs,
   listTombstones,
+  checkStorePersistence,
+  storeIsEphemeral,
+  EPHEMERAL_STORE_MSG,
 } from "./projectstore.js";
 import { outputPathFor, OUTPUT_DIR } from "./security.js";
 
@@ -919,6 +922,10 @@ async function runHttp(port: number) {
   // Raw bytes (no base64) so it stays small and fast; must precede express.json.
   const blobUploadHandler = async (req: express.Request, res: express.Response) => {
     try {
+      if (storeIsEphemeral()) {
+        res.status(507).json({ error: EPHEMERAL_STORE_MSG });
+        return;
+      }
       const buf = req.body as Buffer;
       if (!Buffer.isBuffer(buf) || buf.length === 0) {
         res.status(400).json({ error: "empty body — PUT the raw image bytes" });
@@ -1025,6 +1032,10 @@ async function runHttp(port: number) {
     // is also the migration path: a browser-only project is written on first sync.
     app.put(`${p}/projects/:id`, async (req, res) => {
       try {
+        if (storeIsEphemeral()) {
+          res.status(507).json({ error: EPHEMERAL_STORE_MSG });
+          return;
+        }
         const rec = { ...(req.body || {}), id: req.params.id };
         if (!Array.isArray(rec.screenshots)) {
           res.status(400).json({ error: "record needs a screenshots array" });
@@ -1122,13 +1133,19 @@ async function runHttp(port: number) {
       }
     });
 
-    app.get(`${p}/health`, (_req, res) => res.json({ ok: true }));
+    app.get(`${p}/health`, (_req, res) => res.json({ ok: !storeIsEphemeral(), persistentStore: !storeIsEphemeral() }));
   };
   HTTP_PREFIXES.forEach(registerRestRoutes);
 
   app.listen(port, () => {
     console.error(`[appscreen-mcp] HTTP listening on http://localhost:${port}/mcp`);
   });
+
+  // Refuse-writes guard: with REQUIRE_PERSISTENT_STORE=1 (the Docker image's
+  // default), a store that is NOT on a mounted volume puts the server in
+  // read-only mode — failing loudly beats silently accepting data that the
+  // next redeploy would destroy.
+  checkStorePersistence().catch(() => {});
 
   // Loud store report at startup: if this says "0 projects" on a server that had
   // data, the volume/path is wrong — fix the mount BEFORE anything writes.

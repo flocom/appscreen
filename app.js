@@ -5146,47 +5146,103 @@ function setupEventListeners() {
             else if (v && typeof v === 'object') replaceStrings(v, map);
         }
     }
-    async function uploadImportBlob(projectId, bytes, ext) {
-        const e = (ext || 'png').toLowerCase();
-        const hash = (await sha256Hex(bytes)).slice(0, 40);
-        const name = hash + '.' + e;
+    function httpErrorHint(status) {
+        if (status === 413) return ' (fichier trop volumineux pour le serveur)';
+        if (status === 507) return ' — STOCKAGE SERVEUR NON PERSISTANT : le volume n’est pas monté, corrigez le déploiement avant d’importer';
+        return '';
+    }
+    // fetch with a hard timeout + retries. A stalled upload (server restart,
+    // proxy cut) must FAIL with a message — never hang the import forever.
+    async function fetchRetry(url, opts, { timeoutMs = 90000, tries = 3 } = {}) {
+        let lastErr;
+        for (let attempt = 1; attempt <= tries; attempt++) {
+            const ctl = new AbortController();
+            const t = setTimeout(() => ctl.abort(), timeoutMs);
+            try {
+                const r = await fetch(url, { ...opts, signal: ctl.signal });
+                clearTimeout(t);
+                if (r.ok) return r;
+                if (r.status === 413 || r.status === 507) return r; // permanent — don't retry
+                lastErr = new Error('HTTP ' + r.status);
+            } catch (e) {
+                clearTimeout(t);
+                lastErr = (e && e.name === 'AbortError') ? new Error('délai dépassé (' + (timeoutMs / 1000) + 's)') : e;
+            }
+            if (attempt < tries) await new Promise(res => setTimeout(res, 2000 * attempt));
+        }
+        throw lastErr || new Error('échec réseau');
+    }
+    async function uploadImportBlob(projectId, bytes, ext, name) {
         const base = RemoteStore.baseUrl();
         if (!base) throw new Error('aucun serveur configuré');
+        const e = (ext || 'png').toLowerCase();
         const mime = EXT_TO_MIME[e] || 'application/octet-stream';
-        const r = await fetch(base + '/projects/' + encodeURIComponent(projectId) + '/blobs/' + name, {
+        const r = await fetchRetry(base + '/projects/' + encodeURIComponent(projectId) + '/blobs/' + name, {
             method: 'PUT', headers: { ...RemoteStore._headers(false), 'Content-Type': mime }, body: bytes
         });
-        if (!r.ok) throw new Error('upload image HTTP ' + r.status + (r.status === 413 ? ' (image > 60 Mo)' : ''));
+        if (!r.ok) throw new Error('upload image HTTP ' + r.status + httpErrorHint(r.status));
         return REF_SCHEME + name;
     }
     async function importRecordToServer(data, zip, label) {
+        const base = RemoteStore.baseUrl();
+        if (!base) throw new Error('aucun serveur configuré');
         const sources = new Set();
         collectImageSources(data, sources);
         const list = Array.from(sources);
         const map = new Map();
+
+        // One image in memory at a time, in two passes.
+        // Pass 1 — hash: read each image's bytes, compute its content-addressed
+        // name, DISCARD the bytes (re-read from the ZIP on upload). Knowing every
+        // name up front lets blobs/check tell us which blobs the server already
+        // has, so a re-import after a failure RESUMES instead of restarting.
+        const readBytes = async (src) => {
+            if (src.startsWith('zip:')) {
+                const f = zip && zip.file(src.slice(4));
+                if (!f) return null; // missing in archive — leave as-is; server verify flags it
+                return { bytes: await f.async('uint8array'), ext: (src.slice(4).split('.').pop() || 'png').toLowerCase() };
+            }
+            const r = dataUrlToBytes(src);
+            return { bytes: r.bytes, ext: r.ext };
+        };
+        const items = [];
         for (let i = 0; i < list.length; i++) {
             const src = list[i];
-            showUploadProgress('Import des images… (' + (i + 1) + '/' + list.length + ')', label || '');
-            let bytes, ext;
-            if (src.startsWith('zip:')) {
-                const path = src.slice(4);
-                const f = zip && zip.file(path);
-                if (!f) continue; // missing in archive — leave as-is; server verify flags it
-                bytes = await f.async('uint8array');
-                ext = (path.split('.').pop() || 'png').toLowerCase();
+            showUploadProgress('Préparation des images… (' + (i + 1) + '/' + list.length + ')', label || '');
+            const read = await readBytes(src);
+            if (!read) continue;
+            const name = (await sha256Hex(read.bytes)).slice(0, 40) + '.' + (read.ext || 'png').toLowerCase();
+            items.push({ src, ext: read.ext, name }); // bytes NOT kept
+        }
+        let missing = new Set(items.map(it => it.name));
+        try {
+            const r = await fetchRetry(base + '/projects/' + encodeURIComponent(data.id) + '/blobs/check', {
+                method: 'POST', headers: RemoteStore._headers(true),
+                body: JSON.stringify({ names: items.map(it => it.name) })
+            }, { timeoutMs: 30000 });
+            if (r.ok) missing = new Set((await r.json()).missing || []);
+        } catch (e) { /* can't check — upload everything */ }
+
+        // Pass 2 — upload only the missing blobs, re-reading bytes one at a time.
+        let done = 0;
+        const toUpload = items.filter(it => missing.has(it.name)).length;
+        for (const it of items) {
+            if (missing.has(it.name)) {
+                done++;
+                showUploadProgress('Import des images… (' + done + '/' + toUpload + ')', label || '');
+                const read = await readBytes(it.src);
+                if (!read) continue;
+                map.set(it.src, await uploadImportBlob(data.id, read.bytes, it.ext, it.name));
             } else {
-                const r = dataUrlToBytes(src); bytes = r.bytes; ext = r.ext;
+                map.set(it.src, REF_SCHEME + it.name); // already on the server — resume for free
             }
-            map.set(src, await uploadImportBlob(data.id, bytes, ext));
         }
         replaceStrings(data, map);
         showUploadProgress('Enregistrement du projet…', label || '');
-        const base = RemoteStore.baseUrl();
-        if (!base) throw new Error('aucun serveur configuré');
-        const r = await fetch(base + '/projects/' + encodeURIComponent(data.id), {
+        const r = await fetchRetry(base + '/projects/' + encodeURIComponent(data.id), {
             method: 'PUT', headers: RemoteStore._headers(true), body: JSON.stringify(data)
         });
-        if (!r.ok) throw new Error('enregistrement du projet HTTP ' + r.status + (r.status === 413 ? ' (record trop volumineux)' : ''));
+        if (!r.ok) throw new Error('enregistrement du projet HTTP ' + r.status + httpErrorHint(r.status));
         return true;
     }
 

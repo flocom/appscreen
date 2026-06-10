@@ -1,14 +1,36 @@
 name: Build and Publish Docker Image
 
+# PATH-FILTERED: only runs when the web app actually changed, so the web
+# container isn't restarted by MCP-only merges (and vice versa).
 on:
   push:
     branches:
       - main
     tags:
       - "v*"
+    paths:
+      - "*.html"
+      - "*.css"
+      - "*.js"
+      - "models/**"
+      - "img/**"
+      - "nginx.conf"
+      - "Dockerfile"
+      - "docker/**"
+      - ".github/workflows/docker-publish.yml"
   pull_request:
     branches:
       - main
+    paths:
+      - "*.html"
+      - "*.css"
+      - "*.js"
+      - "models/**"
+      - "img/**"
+      - "nginx.conf"
+      - "Dockerfile"
+      - "docker/**"
+      - ".github/workflows/docker-publish.yml"
   workflow_dispatch: {}
 
 env:
