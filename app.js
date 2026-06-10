@@ -1332,12 +1332,11 @@ const fileInput = document.getElementById('file-input');
 const screenshotList = document.getElementById('screenshot-list');
 const noScreenshot = document.getElementById('no-screenshot');
 
-// IndexedDB for larger storage (can store hundreds of MB vs localStorage's 5-10MB)
-let db = null;
-const DB_NAME = 'AppStoreScreenshotGenerator';
-const DB_VERSION = 2;
-const PROJECTS_STORE = 'projects';
-const META_STORE = 'meta';
+// SERVER-ONLY STORAGE. The MCP server's disk is the one and only project store:
+// a project is on the server or it doesn't exist. The browser persists nothing
+// but the current-project id (a UI preference, in localStorage). Older builds
+// kept a full IndexedDB mirror — it is deleted at startup (legacy cleanup).
+const LEGACY_DB_NAME = 'AppStoreScreenshotGenerator';
 
 let currentProjectId = 'default';
 let projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
@@ -1360,189 +1359,59 @@ let _remotePushInFlight = false;
 // this tab instantly, with no manual refresh.
 let _remoteEventSource = null;
 
-function openDatabase() {
-    return new Promise((resolve, reject) => {
-        try {
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-            request.onerror = (event) => {
-                console.error('IndexedDB error:', event.target.error);
-                // Continue without database
-                resolve(null);
-            };
-
-            request.onsuccess = () => {
-                db = request.result;
-                resolve(db);
-            };
-
-            request.onupgradeneeded = (event) => {
-                const database = event.target.result;
-
-                // Delete old store if exists (from version 1)
-                if (database.objectStoreNames.contains('state')) {
-                    database.deleteObjectStore('state');
-                }
-
-                // Create projects store
-                if (!database.objectStoreNames.contains(PROJECTS_STORE)) {
-                    database.createObjectStore(PROJECTS_STORE, { keyPath: 'id' });
-                }
-
-                // Create meta store for project list and current project
-                if (!database.objectStoreNames.contains(META_STORE)) {
-                    database.createObjectStore(META_STORE, { keyPath: 'key' });
-                }
-            };
-
-            request.onblocked = () => {
-                console.warn('Database upgrade blocked. Please close other tabs.');
-                resolve(null);
-            };
-        } catch (e) {
-            console.error('Failed to open IndexedDB:', e);
-            resolve(null);
-        }
-    });
-}
-
-// Load project list and current project
-async function loadProjectsMeta() {
-    if (!db) return;
-
-    return new Promise((resolve) => {
-        try {
-            const transaction = db.transaction([META_STORE], 'readonly');
-            const store = transaction.objectStore(META_STORE);
-
-            const projectsReq = store.get('projects');
-            const currentReq = store.get('currentProject');
-
-            transaction.oncomplete = () => {
-                if (projectsReq.result) {
-                    projects = projectsReq.result.value;
-                }
-                if (currentReq.result) {
-                    currentProjectId = currentReq.result.value;
-                }
-                updateProjectSelector();
-                resolve();
-            };
-
-            transaction.onerror = () => resolve();
-        } catch (e) {
-            resolve();
-        }
-    });
-}
-
-// Save project list and current project
-function saveProjectsMeta() {
-    if (!db) return;
-
+// One-time cleanup of the legacy IndexedDB mirror (older builds cached projects
+// in the browser; that cache no longer exists — the server is the only store).
+function deleteLegacyDatabase() {
     try {
-        const transaction = db.transaction([META_STORE], 'readwrite');
-        const store = transaction.objectStore(META_STORE);
-        store.put({ key: 'projects', value: projects });
-        store.put({ key: 'currentProject', value: currentProjectId });
-    } catch (e) {
-        console.error('Error saving projects meta:', e);
-    }
+        if (typeof indexedDB !== 'undefined') indexedDB.deleteDatabase(LEGACY_DB_NAME);
+    } catch (e) { /* best effort */ }
 }
 
-// ===== Remote project store: sync projects to the MCP server's disk =====
-// Projects are no longer kept only in the browser's IndexedDB cache. When an MCP
-// server is configured (Settings → MCP Server), the server's disk becomes the
-// shared source of truth: on startup we migrate any browser-only projects up to
-// the server and hydrate server projects back down into IndexedDB, and every
-// save is pushed to the server. IndexedDB stays as the offline cache/fallback.
+// The only persisted UI preference: which project is open.
+function loadProjectsMeta() {
+    try {
+        const saved = localStorage.getItem('currentProjectId');
+        if (saved) currentProjectId = saved;
+    } catch (e) { /* localStorage unavailable — session-only */ }
+}
 
-// Promise wrappers around the IndexedDB projects store (used by the sync layer).
-function idbGetProject(id) {
-    return new Promise((resolve) => {
-        if (!db) return resolve(null);
-        try {
-            const tx = db.transaction([PROJECTS_STORE], 'readonly');
-            const rq = tx.objectStore(PROJECTS_STORE).get(id);
-            rq.onsuccess = () => resolve(rq.result || null);
-            rq.onerror = () => resolve(null);
-        } catch (e) { resolve(null); }
-    });
+function saveProjectsMeta() {
+    try {
+        localStorage.setItem('currentProjectId', currentProjectId);
+    } catch (e) { /* best effort */ }
 }
-function idbPutProject(rec) {
-    return new Promise((resolve) => {
-        if (!db || !rec || !rec.id) return resolve(false);
-        try {
-            const tx = db.transaction([PROJECTS_STORE], 'readwrite');
-            tx.objectStore(PROJECTS_STORE).put(rec);
-            tx.oncomplete = () => resolve(true);
-            tx.onerror = () => resolve(false);
-        } catch (e) { resolve(false); }
-    });
-}
-function idbDeleteProject(id) {
-    return new Promise((resolve) => {
-        if (!db || !id) return resolve(false);
-        try {
-            const tx = db.transaction([PROJECTS_STORE], 'readwrite');
-            tx.objectStore(PROJECTS_STORE).delete(id);
-            tx.oncomplete = () => resolve(true);
-            tx.onerror = () => resolve(false);
-        } catch (e) { resolve(false); }
-    });
-}
-function idbGetMeta(key) {
-    return new Promise((resolve) => {
-        if (!db) return resolve(null);
-        try {
-            const tx = db.transaction([META_STORE], 'readonly');
-            const rq = tx.objectStore(META_STORE).get(key);
-            rq.onsuccess = () => resolve(rq.result ? rq.result.value : null);
-            rq.onerror = () => resolve(null);
-        } catch (e) { resolve(null); }
-    });
-}
-function idbPutMeta(key, value) {
-    return new Promise((resolve) => {
-        if (!db) return resolve(false);
-        try {
-            const tx = db.transaction([META_STORE], 'readwrite');
-            tx.objectStore(META_STORE).put({ key, value });
-            tx.oncomplete = () => resolve(true);
-            tx.onerror = () => resolve(false);
-        } catch (e) { resolve(false); }
-    });
-}
+
+// ===== Remote project store =====
+// The MCP server's disk is the ONLY project store. The list of projects, every
+// record and every image live there; the browser holds the open project in
+// memory and pushes each change. Nothing project-related persists browser-side.
 
 // ===== Pending-upload ledger ===============================================
 // Guarantee: a file that enters the editor can NOT silently disappear before the
 // SERVER has confirmed it (blob present + record referencing it accepted).
 //
-// Every imported image is recorded here (persisted in IndexedDB, survives tab
-// close) and removed only on server confirmation. Whenever the app adopts the
-// server's copy of a project (the server is the source of truth: SSE update,
-// freshness reload, push conflict, startup sync), pending entries are re-applied
-// into the fresh server record and pushed again. Server truth is preserved: a
-// stale entry never overwrites a slot the server has since filled — entries only
-// complete the save of the user's own recent upload.
-const PENDING_UPLOADS_KEY = 'pendingUploads';
+// Every imported image is recorded here (in memory — the blocking upload overlay
+// plus the beforeunload warning cover the tab-close window) and removed only on
+// server confirmation. Whenever the app adopts the server's copy of a project
+// (the server is the source of truth: SSE update, freshness reload, push
+// conflict, reconnect), pending entries are re-applied into the fresh server
+// record and pushed again. Server truth is preserved: a stale entry never
+// overwrites a slot the server has since filled — entries only complete the
+// save of the user's own recent upload.
 const PENDING_UPLOAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // give up + warn after 7 days
 const PENDING_UPLOAD_FRESH_MS = 10 * 60 * 1000; // a fresh entry may overwrite (it's the user's latest intent)
-let _pendingUploads = null; // { [projectId]: [{ lang, name, base, src, ts }] }
+let _pendingUploads = {}; // { [projectId]: [{ lang, name, base, src, ts }] }
 
 async function getPendingUploads() {
-    if (_pendingUploads === null) _pendingUploads = (await idbGetMeta(PENDING_UPLOADS_KEY)) || {};
     return _pendingUploads;
 }
-function persistPendingUploads() {
-    if (_pendingUploads !== null) idbPutMeta(PENDING_UPLOADS_KEY, _pendingUploads);
-}
+function persistPendingUploads() { /* in-memory only — nothing to persist */ }
 
 // Record an image that just entered the editor (called from every import path).
 function trackPendingUpload(lang, name, src) {
     if (!src || typeof src !== 'string' || !src.startsWith('data:image/')) return;
     const l = lang || 'en';
-    const pid = currentProjectId; // capture now — the user may switch projects before the IDB read returns
+    const pid = currentProjectId; // capture now — the user may switch projects before the async hop
     getPendingUploads().then(all => {
         const list = all[pid] = all[pid] || [];
         const base = (typeof getBaseFilename === 'function') ? getBaseFilename(name || '') : (name || '');
@@ -1637,13 +1506,12 @@ async function reapplyPendingUploads(projectId) {
         const all = await getPendingUploads();
         const list = all[projectId];
         if (!list || !list.length) return false;
-        const rec = await idbGetProject(projectId);
+        const rec = await RemoteStore.get(projectId); // server is the only store
         if (!rec) return false;
         const res = applyPendingUploadsToRecord(rec, list);
         if (res.keep.length) all[projectId] = res.keep; else delete all[projectId];
         persistPendingUploads();
         if (res.changed) {
-            await idbPutProject(rec);
             const meta = projects.find(p => p.id === projectId);
             scheduleRemotePush({ ...rec, name: meta ? meta.name : (rec.name || projectId) });
             return true;
@@ -1707,11 +1575,9 @@ async function sha256Hex(bytes) {
 
 const EXT_FROM_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
 
-// data:URL -> blob name, but ONLY for images confirmed present on the server (set
-// after a successful upload, or after fetching from the server on load). Drives
-// "disk-only" persistence: such images are stored in IndexedDB as a tiny
-// "appdisk://<name>" ref instead of their bytes. Images NOT in here (not yet
-// uploaded) keep their bytes locally so nothing is lost offline.
+// data:URL -> blob name, for images confirmed present on the server (set after a
+// successful upload, or after fetching a blob from the server). Lets the heal
+// path map missing blob names back to bytes this session still holds.
 const refCache = new Map();
 const REF_SCHEME = 'appdisk://';
 
@@ -1768,27 +1634,6 @@ async function externalizeForUpload(record) {
         blobs: Array.from(blobs, ([name, v]) => ({ name, bytes: v.bytes, mime: v.mime })),
         refs,
     };
-}
-
-// Replace data:image URLs with "appdisk://<name>" refs for the images we KNOW are
-// on the server (refCache), so IndexedDB stores tiny refs instead of bytes. Deep
-// clones first so the in-memory state (which keeps data URLs for rendering) is
-// untouched. Images not yet on the server keep their bytes (safe offline).
-function refifyForIdb(record) {
-    const clone = JSON.parse(JSON.stringify(record));
-    const walk = (obj) => {
-        const keys = Array.isArray(obj) ? obj.map((_, i) => i) : Object.keys(obj);
-        for (const k of keys) {
-            const v = obj[k];
-            if (typeof v === 'string' && v.startsWith('data:image/') && refCache.has(v)) {
-                obj[k] = REF_SCHEME + refCache.get(v);
-            } else if (v && typeof v === 'object') {
-                walk(v);
-            }
-        }
-    };
-    if (clone && typeof clone === 'object') walk(clone);
-    return clone;
 }
 
 // Session cache of resolved blobs (name -> data URL), so switching back to a
@@ -2080,8 +1925,8 @@ const RemoteStore = {
                 return false;
             }
             if (r.ok) {
-                // Now confirmed on the server → these images can be stored as refs
-                // (bytes dropped from IndexedDB on the next save).
+                // Confirmed on the server — remember which bytes map to which blob
+                // (drives the self-heal path).
                 for (const [dataUrl, name] of refs) refCache.set(dataUrl, name);
                 let missingRefs = [];
                 try {
@@ -2090,11 +1935,6 @@ const RemoteStore = {
                         // Adopt the new revision so our next push isn't seen as stale.
                         remoteRev.set(record.id, j.rev);
                         if (record.id === currentProjectId) currentProjectRev = j.rev;
-                        // Persist the COMMITTED rev into IndexedDB. Without this the
-                        // cache keeps the pre-push base rev, so reopening the project
-                        // makes the freshness poll/SSE think the server is ahead and
-                        // falsely report "modifié ailleurs".
-                        persistCommittedRev(record.id, j.rev);
                     }
                     if (j && Array.isArray(j.missingRefs)) missingRefs = j.missingRefs;
                 } catch (e) { /* response without body — ignore */ }
@@ -2182,23 +2022,13 @@ function labelRefsInRecord(refRecord, names) {
     return labels;
 }
 
-// Persist the server-committed rev into the cached IndexedDB record (rev only),
-// so a later reload/switch restores the correct base rev and doesn't mistake our
-// own last push for a remote change.
-function persistCommittedRev(id, rev) {
-    if (!id || typeof rev !== 'number') return;
-    idbGetProject(id).then(rec => {
-        if (rec && rec.rev !== rev) { rec.rev = rev; idbPutProject(rec); }
-    }).catch(() => {});
-}
-
-// Ids of projects known to live on the server's disk (drives the sync badge in
-// the project dropdown). Empty when no server is configured or it's unreachable.
+// Ids of projects known to live on the server's disk. Empty when no server is
+// configured or it's unreachable.
 let remoteProjectIds = new Set();
 
 // True while loadState() is still hydrating screenshots (images load async, after
 // the promise resolves). saveState() is suppressed during this window so the
-// transient empty state is never persisted to IndexedDB or pushed to the server.
+// transient empty state is never pushed to the server.
 let projectLoading = false;
 // Monotonic token: every loadState() call bumps it and captures its own value.
 // When loads overlap (e.g. importing a 2nd project while the 1st is still
@@ -2299,11 +2129,14 @@ function _executeScheduledPush(id, rec) {
         const delay = Math.min(60000, 5000 * Math.pow(2, n - 1));
         setTimeout(() => {
             if (_remotePushPending.has(id)) return; // a newer push got scheduled meanwhile
-            idbGetProject(id).then(fresh => {
-                if (!fresh) return;
-                const meta = projects.find(p => p.id === id);
-                scheduleRemotePush({ ...fresh, name: meta ? meta.name : (fresh.name || id) });
-            });
+            if (id === currentProjectId) {
+                // Rebuild from the live editor state (the only browser-side copy)
+                // and let saveState schedule the fresh push.
+                saveState();
+            } else {
+                // Not open in the editor — retry the same record snapshot.
+                scheduleRemotePush(rec);
+            }
         }, delay);
         return false;
     });
@@ -2346,8 +2179,8 @@ async function waitForServerConfirmation(id, maxRounds = 3) {
 }
 
 // A save is only DONE once the server confirmed it. Warn before closing while a
-// push is queued/in flight or uploads await confirmation (everything is still in
-// IndexedDB and resumes on next open — but other devices/Claude won't see it yet).
+// push is queued/in flight or uploads await confirmation: the server is the only
+// store, so anything unconfirmed exists nowhere else than this tab's memory.
 if (typeof window !== 'undefined') {
     window.addEventListener('beforeunload', (e) => {
         let pendingUploads = false;
@@ -2359,93 +2192,45 @@ if (typeof window !== 'undefined') {
     });
 }
 
-// Migrate browser-only projects up to the server, then hydrate server projects
-// back into IndexedDB. No-op (keeps local cache) when no server is configured or
-// the server is unreachable.
+// Load the project list from the server — THE ONLY PROJECT STORE. No browser
+// cache exists anymore: what the server lists is what exists, period. The sole
+// exception is a project living only in this session's memory (created while
+// offline / just now): it stays in the list and is created server-side by its
+// next save.
 async function syncWithRemote() {
-    if (!RemoteStore.enabled()) return;
+    if (!RemoteStore.enabled()) {
+        setSyncStatus('error', 'Aucun serveur configuré — rien ne sera enregistré');
+        return;
+    }
     setSyncStatus('syncing', 'Synchronisation…');
     const serverList = await RemoteStore.list();
     if (serverList === null) {
         console.warn('MCP project sync: server unreachable.');
-        // Only surface an error when the user explicitly configured a server;
-        // for an auto-detected URL that simply isn't there, stay silent.
-        setSyncStatus(RemoteStore.isExplicit() ? 'error' : 'idle',
-            RemoteStore.isExplicit() ? 'Serveur injoignable — modifications non enregistrées' : '');
+        setSyncStatus('error', 'Serveur injoignable — modifications non enregistrées');
         return;
     }
-    const serverCounts = new Map(serverList.map(p => [p.id, p.screenshotCount || 0]));
-    const serverIds = new Set(serverList.map(p => p.id));
 
-    // THE SERVER IS THE SOURCE OF TRUTH. The cache never argues with it:
-    //  - deletions are authoritative (tombstones) — the cache drops them;
-    //  - server content replaces the cache whenever revisions differ;
-    //  - the cache only fills a real gap: projects the server has never seen.
-    // The user's own uploads are protected separately by the pending-upload
-    // ledger (re-applied below), never by cache-vs-server heuristics.
+    const next = serverList.map(p => ({ id: p.id, name: p.name, screenshotCount: p.screenshotCount || 0 }));
+    const serverIds = new Set(next.map(p => p.id));
 
-    // 0) Authoritative deletions: ids deleted on the server recently.
-    let tombstones = new Set();
-    try {
-        const r = await fetch(RemoteStore.baseUrl() + '/tombstones', { headers: RemoteStore._headers(false) });
-        if (r.ok) tombstones = new Set(((await r.json()).ids) || []);
-    } catch (e) { /* older server / network blip — treat as none */ }
-
-    // 1) Cache-only projects: tombstoned → deleted on the server, drop the cached
-    //    copy; otherwise it's a project the server never had → save it up.
-    for (const p of projects.slice()) {
+    // Keep session-only projects (not yet on the server) IF the editor actually
+    // holds content for them — their next save creates them server-side.
+    for (const p of projects) {
         if (serverIds.has(p.id)) continue;
-        if (tombstones.has(p.id)) {
-            console.warn('Projet supprimé sur le serveur — retiré localement:', p.id);
-            await idbDeleteProject(p.id);
-            projects = projects.filter(x => x.id !== p.id);
-            const all = await getPendingUploads();
-            if (all[p.id]) { delete all[p.id]; persistPendingUploads(); }
-            continue;
-        }
-        const rec = await idbGetProject(p.id);
-        if (rec) {
-            const okPush = await RemoteStore.put({ ...rec, name: p.name });
-            if (okPush) serverIds.add(p.id);
-        }
+        const isOpenWithContent = p.id === currentProjectId && state.screenshots.length > 0;
+        const hasQueuedWork = _remotePushPending.has(p.id) || !!_pendingUploads[p.id];
+        if (isOpenWithContent || hasQueuedWork) next.push(p);
     }
-    if (!projects.find(p => p.id === currentProjectId) && projects.length) {
-        currentProjectId = projects[0].id;
-    }
-
-    // 2) Server projects: the server's copy replaces the cache whenever the
-    //    revision differs (newer OR older — e.g. restored from a backup). Equal
-    //    revision = identical content → keep the cache, skip the download.
-    const merged = projects.slice();
-    for (const sp of serverList) {
-        const local = await idbGetProject(sp.id);
-        const localRev = (local && typeof local.rev === 'number') ? local.rev : null;
-        const serverRev = (typeof sp.rev === 'number') ? sp.rev : 0;
-        let count = serverCounts.get(sp.id) || 0;
-        if (local && localRev === serverRev) {
-            count = local.screenshots?.length || count; // same revision — no download needed
-        } else {
-            const rec = await RemoteStore.get(sp.id);
-            if (rec) { await idbPutProject(rec); count = rec.screenshots?.length || 0; }
-            else if (local) count = local.screenshots?.length || count; // fetch failed — keep cache until next sync
-        }
-        const existing = merged.find(p => p.id === sp.id);
-        if (existing) { existing.name = sp.name; existing.screenshotCount = count; }
-        else merged.push({ id: sp.id, name: sp.name, screenshotCount: count });
-    }
-    projects = merged;
-    remoteProjectIds = serverIds; // every id here now exists on the server's disk
+    projects = next;
+    if (!projects.length) projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
+    if (!projects.find(p => p.id === currentProjectId)) currentProjectId = projects[0].id;
+    remoteProjectIds = serverIds;
     saveProjectsMeta();
 
-    // 3) Resume interrupted uploads: any image imported before the tab closed but
-    //    never server-confirmed is re-applied onto the fresh server state and
-    //    pushed now (for every project, even ones not open in the editor).
+    // Resume any uploads from this session that were never server-confirmed.
     try {
         const all = await getPendingUploads();
-        for (const pid of Object.keys(all)) {
-            if (!serverIds.has(pid) && tombstones.has(pid)) { delete all[pid]; persistPendingUploads(); continue; }
-            await reapplyPendingUploads(pid);
-        }
+        for (const pid of Object.keys(all)) await reapplyPendingUploads(pid);
     } catch (e) { console.warn('Reprise des uploads en attente échouée:', e); }
 
     setSyncStatus('ok', 'Synchronisé');
@@ -2477,13 +2262,12 @@ async function reloadProjectFromServer(id) {
             }
         }
     } catch (e) { console.warn('Ré-application des uploads en attente échouée:', e); }
-    await idbPutProject(rec); // refs record; loadState resolves blobs on demand
     if (id === currentProjectId) {
         _reloadingFromServer = true;
         try {
             currentProjectRev = (typeof rec.rev === 'number') ? rec.rev : 0;
             resetStateToDefaults();
-            await loadState();
+            await loadState(rec); // inject the record we just fetched — no second download
             syncUIWithState();
             updateScreenshotList();
             updateGradientStopsUI();
@@ -2578,6 +2362,18 @@ function startRemoteEventStream() {
         if (!d || !d.id) return;
         remoteProjectIds.delete(d.id);
         remoteRev.delete(d.id);
+        // Server truth, live: the project no longer exists — drop it from the list.
+        // Skip if WE initiated the deletion (deleteProject already handles the UI).
+        if (projects.some(p => p.id === d.id) && !_remotePushInFlight) {
+            projects = projects.filter(p => p.id !== d.id);
+            if (!projects.length) projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
+            if (d.id === currentProjectId) {
+                currentProjectId = projects[0].id;
+                saveProjectsMeta();
+                switchProject(currentProjectId, { skipSave: true }).catch(() => {});
+                setSyncStatus('ok', 'Projet supprimé par Claude/MCP');
+            }
+        }
         if (typeof updateProjectSelector === 'function') updateProjectSelector();
     });
 
@@ -2627,11 +2423,11 @@ function updateProjectSelector() {
 // Initialize
 async function init() {
     try {
-        await openDatabase();
-        await loadProjectsMeta();
-        await syncWithRemote(); // migrate browser-only projects to disk + hydrate server projects
+        deleteLegacyDatabase(); // older builds cached projects in IndexedDB — gone
+        loadProjectsMeta();     // just the current-project id (localStorage)
+        await syncWithRemote(); // fetch the project list from the ONLY store: the server
         updateProjectSelector();
-        await loadState();
+        await loadState();      // fetch the open project from the server
         syncUIWithState();
         updateCanvas();
         resetHistory();
@@ -2666,9 +2462,9 @@ function initSync() {
     init();
 }
 
-// Save state to IndexedDB for current project
+// Save state — push the current project to the server (the only store)
 // Debounced persistence: writing the full project (which can be 100+ MB of
-// localized image data) to IndexedDB on every render makes editing janky.
+// localized image data) on every render makes editing janky.
 // scheduleSaveState() coalesces writes; saveState() still forces an immediate,
 // reliable write (used on structural changes and flushed before unload).
 let _saveStateTimer = null;
@@ -2896,10 +2692,9 @@ if (typeof window !== 'undefined') {
 
 function saveState() {
     if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
-    if (!db) return;
     // Don't persist a half-loaded project: loadState() resolves before its async
     // image loads finish populating state.screenshots, so a save here would write
-    // an empty project to IndexedDB and push it to the server, destroying data.
+    // an empty project to the server, destroying data.
     if (projectLoading) return;
     // While reloading the server's newer copy into the editor, don't echo it back
     // out as a save (it would be a redundant push of identical data).
@@ -2959,17 +2754,7 @@ function saveState() {
         saveProjectsMeta();
     }
 
-    try {
-        const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
-        const store = transaction.objectStore(PROJECTS_STORE);
-        // Disk-only: images already on the server are stored as tiny refs (not
-        // bytes), so IndexedDB stays small. Unpushed images keep their bytes.
-        store.put(refifyForIdb(stateToSave));
-    } catch (e) {
-        console.error('Error saving state:', e);
-    }
-
-    // Mirror the save to the MCP server's disk (debounced; no-op if not configured).
+    // Save = push to the server (debounced) — the one and only store.
     // Deep-cloned NOW: the record is serialized 1.5s later, and live references
     // would let edits made in the meantime leak into a payload claiming this rev.
     try {
@@ -3023,24 +2808,24 @@ function reconstructElementImages(elements) {
     });
 }
 
-// Load state from IndexedDB for current project
-function loadState() {
-    if (!db) return Promise.resolve();
+// Load state — fetch the current project from the server (the only store)
+function loadState(injectedRecord) {
     // Claim this load synchronously, so any still-in-flight previous load goes
     // stale the instant we're called (before its async image callbacks fire).
     const myToken = ++loadStateSeq;
 
     return new Promise((resolve) => {
-        try {
-            const transaction = db.transaction([PROJECTS_STORE], 'readonly');
-            const store = transaction.objectStore(PROJECTS_STORE);
-            const request = store.get(currentProjectId);
-
-            request.onsuccess = async () => {
+        (async () => {
                 // Any load started after us (newer token) makes us "stale".
                 const isStale = () => myToken !== loadStateSeq;
-                if (isStale()) { resolve(); return; } // superseded before our IDB read returned
-                const parsed = request.result;
+                // SERVER-ONLY: the record comes from the server (or was injected by
+                // reloadProjectFromServer to avoid a double download). There is no
+                // browser-side store. No server / unknown project → fresh defaults.
+                let parsed = injectedRecord || null;
+                if (!parsed && RemoteStore.enabled()) {
+                    parsed = await RemoteStore.get(currentProjectId);
+                }
+                if (isStale()) { resolve(); return; } // superseded before the fetch returned
                 // Adopt the server revision this project is based on (0 if local-only
                 // or pre-rev), so the next push sends the correct base rev.
                 currentProjectRev = (parsed && typeof parsed.rev === 'number') ? parsed.rev : 0;
@@ -3279,16 +3064,10 @@ function loadState() {
                     updateScreenshotList();
                 }
                 resolve();
-            };
-
-            request.onerror = () => {
-                console.error('Error loading state:', request.error);
-                resolve();
-            };
-        } catch (e) {
+        })().catch((e) => {
             console.error('Error loading state:', e);
             resolve();
-        }
+        });
     });
 }
 
@@ -3417,7 +3196,7 @@ function resetStateToDefaults() {
 // Switch to a different project
 async function switchProject(projectId, { skipSave = false } = {}) {
     // Save current project first (skipped when it was just deleted — saving
-    // would resurrect it in IndexedDB and re-schedule a push to the server)
+    // would re-push it to the server)
     if (!skipSave) saveState();
 
     currentProjectId = projectId;
@@ -3470,7 +3249,7 @@ async function deleteProject() {
     }
 
     // Drop any pending (debounced) persistence of the deleted project so nothing
-    // can re-put it into IndexedDB or re-push it to the server after the delete.
+    // can re-push it to the server after the delete.
     if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
     if (_historyTimer) { clearTimeout(_historyTimer); _historyTimer = null; }
     _historyBaseline = null;
@@ -3480,14 +3259,7 @@ async function deleteProject() {
         _remotePushPending.delete(deletedId);
     }
 
-    // Delete from IndexedDB
-    if (db) {
-        const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
-        const store = transaction.objectStore(PROJECTS_STORE);
-        store.delete(deletedId);
-    }
-
-    // Delete on the server too (no-op if not configured).
+    // Delete on the server — the only store (no-op if not configured).
     RemoteStore.del(deletedId);
     remoteProjectIds.delete(deletedId);
     // Its pending uploads are moot now.
@@ -3502,42 +3274,41 @@ async function deleteProject() {
 }
 
 async function duplicateProject(sourceProjectId, customName) {
-    if (!db) return;
+    // Server-only: read the source from the server, clone it under a new id and
+    // create it server-side. The clone's image refs point at the same content-
+    // addressed blobs, so no image bytes travel at all.
+    if (sourceProjectId === currentProjectId) saveState(); // flush latest edits
+    await waitForServerConfirmation(sourceProjectId);
+    const projectData = await RemoteStore.get(sourceProjectId);
+    if (!projectData) {
+        await showAppAlert('Impossible de lire le projet sur le serveur', 'error');
+        return;
+    }
 
-    const transaction = db.transaction([PROJECTS_STORE], 'readonly');
-    const store = transaction.objectStore(PROJECTS_STORE);
-    const request = store.get(sourceProjectId);
+    const newId = 'project_' + Date.now();
+    const sourceProject = projects.find(p => p.id === sourceProjectId);
+    const newName = customName || (sourceProject ? sourceProject.name : 'Project') + ' (Copy)';
 
-    return new Promise((resolve) => {
-        request.onsuccess = async () => {
-            const projectData = request.result;
-            if (!projectData) {
-                await showAppAlert('Could not read project data', 'error');
-                resolve();
-                return;
-            }
+    const clonedData = JSON.parse(JSON.stringify(projectData));
+    clonedData.id = newId;
+    delete clonedData.rev; // new project — fresh revision chain
 
-            const newId = 'project_' + Date.now();
-            const sourceProject = projects.find(p => p.id === sourceProjectId);
-            const newName = customName || (sourceProject ? sourceProject.name : 'Project') + ' (Copy)';
+    showUploadProgress('Duplication du projet…', newName);
+    try {
+        const ok = await RemoteStore.put({ ...clonedData, name: newName });
+        if (!ok) {
+            await showAppAlert('La duplication a échoué (serveur injoignable ?)', 'error');
+            return;
+        }
+    } finally {
+        hideUploadProgress();
+    }
 
-            const clonedData = JSON.parse(JSON.stringify(projectData));
-            clonedData.id = newId;
-
-            projects.push({ id: newId, name: newName, screenshotCount: clonedData.screenshots?.length || 0 });
-            saveProjectsMeta();
-
-            const writeTransaction = db.transaction([PROJECTS_STORE], 'readwrite');
-            const writeStore = writeTransaction.objectStore(PROJECTS_STORE);
-            writeStore.put(clonedData);
-
-            writeTransaction.oncomplete = async () => {
-                await switchProject(newId);
-                updateProjectSelector();
-                resolve();
-            };
-        };
-    });
+    projects.push({ id: newId, name: newName, screenshotCount: clonedData.screenshots?.length || 0 });
+    remoteProjectIds.add(newId);
+    saveProjectsMeta();
+    await switchProject(newId);
+    updateProjectSelector();
 }
 
 function duplicateScreenshot(index) {
@@ -5377,15 +5148,10 @@ function setupEventListeners() {
     }
 
     document.getElementById('export-project-btn').addEventListener('click', async () => {
-        if (!db) return;
         try {
-            saveState(); // flush pending edits so the latest images/settings are on disk
-            const rec = await new Promise((resolve, reject) => {
-                const tx = db.transaction(PROJECTS_STORE, 'readonly');
-                const req = tx.objectStore(PROJECTS_STORE).get(currentProjectId);
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error);
-            });
+            saveState(); // flush pending edits so the latest images/settings reach the server
+            await waitForServerConfirmation(currentProjectId);
+            const rec = await RemoteStore.get(currentProjectId); // the server is the only store
             if (!rec) { await showAppAlert('No project data to export.', 'error'); return; }
             const meta = projects.find(p => p.id === currentProjectId);
             const name = meta ? meta.name : 'Project';
@@ -5425,7 +5191,7 @@ function setupEventListeners() {
     });
     importInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
-        if (!file || !db) return;
+        if (!file) return;
         try {
             let manifest;
             const isZip = /\.zip$/i.test(file.name) || file.type === 'application/zip';
@@ -5440,35 +5206,45 @@ function setupEventListeners() {
             }
 
             if (manifest && manifest.type === 'appscreen-project-backup' && manifest.data) {
-                // Import as a NEW project (never overwrites; re-importable; portable).
+                // Import as a NEW project, created directly ON THE SERVER (the
+                // only store). Never overwrites; re-importable; portable.
                 const newId = 'project_' + Date.now();
                 const data = manifest.data;
                 data.id = newId;
+                delete data.rev; // fresh revision chain on the server
                 let name = manifest.name || 'Imported Project';
                 if (projects.some(p => p.name === name)) name += ' (Imported)';
-                await new Promise((resolve, reject) => {
-                    const tx = db.transaction(PROJECTS_STORE, 'readwrite');
-                    tx.objectStore(PROJECTS_STORE).put(data);
-                    tx.oncomplete = resolve;
-                    tx.onerror = () => reject(tx.error);
-                });
+                showUploadProgress('Import du projet…', name);
+                let ok = false;
+                try {
+                    ok = await RemoteStore.put({ ...data, name });
+                } finally {
+                    hideUploadProgress();
+                }
+                if (!ok) throw new Error('le serveur n’a pas accepté le projet');
                 projects.push({ id: newId, name, screenshotCount: (data.screenshots && data.screenshots.length) || 0 });
+                remoteProjectIds.add(newId);
                 saveProjectsMeta();
                 await switchProject(newId);
                 updateProjectSelector();
                 await showAppAlert(`Imported "${name}" with all screenshots, images and settings.`, 'success');
             } else {
-                // Legacy full-database dump (keyed by object-store name) → restore as-is.
+                // Legacy full-IndexedDB dump: import each project record to the server.
                 const dump = manifest;
-                for (const storeName of Object.keys(dump)) {
-                    if (!db.objectStoreNames.contains(storeName)) continue;
-                    const tx = db.transaction(storeName, 'readwrite');
-                    const store = tx.objectStore(storeName);
-                    for (const record of dump[storeName]) store.put(record);
-                    await new Promise((resolve, reject) => {
-                        tx.oncomplete = resolve;
-                        tx.onerror = () => reject(tx.error);
-                    });
+                const records = Array.isArray(dump && dump.projects) ? dump.projects : null;
+                if (!records || !records.length) throw new Error('format de sauvegarde non reconnu');
+                showUploadProgress('Import des projets…', '');
+                try {
+                    for (let i = 0; i < records.length; i++) {
+                        const rec = records[i];
+                        if (!rec || !Array.isArray(rec.screenshots)) continue;
+                        showUploadProgress('Import des projets… (' + (i + 1) + '/' + records.length + ')', rec.name || rec.id || '');
+                        rec.id = 'project_' + Date.now() + '_' + i;
+                        delete rec.rev;
+                        await RemoteStore.put({ ...rec, name: rec.name || ('Imported ' + (i + 1)) });
+                    }
+                } finally {
+                    hideUploadProgress();
                 }
                 await showAppAlert('Backup imported. Reloading…', 'success');
                 location.reload();
@@ -7732,8 +7508,8 @@ async function connectMcpServer(url, token, opts = {}) {
         mcpState = { connected: true, tools, url, info };
         setMcpStatus('connected', `Connected to ${info} · ${tools.length} tools`);
         renderMcpTools(tools);
-        // Now that a server is connected, migrate local projects to disk and
-        // hydrate any server-side projects, then refresh the project list.
+        // Now that a server is connected, load its project list (the only store)
+        // and refresh the selector.
         syncWithRemote().then(() => updateProjectSelector()).catch(() => {});
     } catch (e) {
         mcpState = { connected: false, tools: [], url, info: '' };
