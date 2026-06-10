@@ -2189,6 +2189,18 @@
     </div>
 
     <!-- Export Progress Modal -->
+    <!-- Blocking upload overlay: shown while images are imported and held until
+         the SERVER confirms the save (an upload isn't done before that). Sits
+         below the duplicate-image dialog so that choice stays clickable. -->
+    <div class="modal-overlay" id="upload-progress-modal">
+        <div class="modal upload-progress-modal">
+            <div class="upload-spinner"></div>
+            <h2>Envoi en cours…</h2>
+            <p id="upload-progress-status">Import des images…</p>
+            <p id="upload-progress-detail" class="upload-progress-detail"></p>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="export-progress-modal">
         <div class="modal export-progress-modal">
             <div class="modal-icon" style="background: rgba(10, 132, 255, 0.2);">
