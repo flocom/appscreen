@@ -941,6 +941,60 @@ async function runHttp(port: number) {
     app.put(`${p}/projects/:id/blobs/:name`, express.raw({ type: "*/*", limit: "60mb" }), blobUploadHandler);
   }
 
+  // BATCH image upload: many blobs in ONE request, so importing/saving a project
+  // with hundreds of images costs a handful of round-trips instead of one per
+  // image (a huge win over a tunnel). Binary framing (no base64 bloat):
+  //   [uint32 BE headerLen][headerLen bytes JSON: [{name,size},…]][blob bytes…]
+  // Each blob is content-addressed and verified exactly like the single PUT.
+  const blobBatchHandler = async (req: express.Request, res: express.Response) => {
+    try {
+      if (storeIsEphemeral()) {
+        res.status(507).json({ error: EPHEMERAL_STORE_MSG });
+        return;
+      }
+      const buf = req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length < 4) {
+        res.status(400).json({ error: "empty batch" });
+        return;
+      }
+      const headerLen = buf.readUInt32BE(0);
+      let off = 4;
+      if (headerLen <= 0 || off + headerLen > buf.length) {
+        res.status(400).json({ error: "bad batch header length" });
+        return;
+      }
+      let header: Array<{ name: string; size: number }>;
+      try {
+        header = JSON.parse(buf.toString("utf8", off, off + headerLen));
+        if (!Array.isArray(header)) throw new Error("not an array");
+      } catch {
+        res.status(400).json({ error: "bad batch header json" });
+        return;
+      }
+      off += headerLen;
+      const stored: string[] = [];
+      const errors: Array<{ name: string; error: string }> = [];
+      for (const ent of header) {
+        const name = String(ent && ent.name);
+        const size = ent && typeof ent.size === "number" ? ent.size : -1;
+        if (size < 0 || off + size > buf.length) {
+          errors.push({ name, error: "truncated batch entry" });
+          break;
+        }
+        const data = Buffer.from(buf.subarray(off, off + size));
+        off += size;
+        try { await putBlob(name, data); stored.push(name); }
+        catch (e: any) { errors.push({ name, error: String(e?.message ?? e) }); }
+      }
+      res.json({ ok: errors.length === 0, stored, errors });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message ?? e) });
+    }
+  };
+  for (const p of HTTP_PREFIXES) {
+    app.post(`${p}/projects/:id/blobs/batch`, express.raw({ type: "*/*", limit: "110mb" }), blobBatchHandler);
+  }
+
   app.use(express.json({ limit: "50mb" }));
 
   // Stateless: a fresh server+transport per request (simple and robust).

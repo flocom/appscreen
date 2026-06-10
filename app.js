@@ -1854,6 +1854,63 @@ const RemoteStore = {
     // images n/N" counter jumps around randomly. Also prevents overlapping
     // pushes from racing on shared state.
     _putChain: Promise.resolve(),
+    // Send one batch of blobs in a single request (binary framing). Returns true
+    // on success, false on a real failure, or 'no-batch-endpoint' when the server
+    // is too old (then the caller falls back to per-blob PUTs).
+    async _uploadBatch(eid, batch) {
+        const b = this.baseUrl(); if (!b) return false;
+        const header = JSON.stringify(batch.map(x => ({ name: x.name, size: x.bytes.length })));
+        const headerBytes = new TextEncoder().encode(header);
+        const head = new Uint8Array(4);
+        new DataView(head.buffer).setUint32(0, headerBytes.length, false);
+        const body = new Blob([head, headerBytes, ...batch.map(x => x.bytes)]);
+        let r;
+        try {
+            r = await fetch(b + '/projects/' + eid + '/blobs/batch', {
+                method: 'POST', headers: { ...this._headers(false), 'Content-Type': 'application/octet-stream' }, body
+            });
+        } catch (e) { return false; }
+        if (r.status === 404 || r.status === 405) return 'no-batch-endpoint';
+        if (!r.ok) return false;
+        try { const j = await r.json(); return !j.errors || j.errors.length === 0; } catch (e) { return true; }
+    },
+    // Upload blobs grouped into few batches (one round-trip per ~40 MB / 40 images
+    // instead of one per image), with a per-blob PUT fallback for old servers.
+    // items: [{ name, bytes, mime }]. onProgress(done, total). Returns true/false.
+    async uploadBlobs(id, items, onProgress) {
+        const b = this.baseUrl(); if (!b) return false;
+        if (!items.length) return true;
+        const eid = encodeURIComponent(id);
+        const MAX_BYTES = 40 * 1024 * 1024, MAX_COUNT = 40;
+        let done = 0, useBatch = true, i = 0;
+        const total = items.length;
+        const putOne = async (it) => {
+            const r = await fetch(b + '/projects/' + eid + '/blobs/' + it.name, {
+                method: 'PUT', headers: { ...this._headers(false), 'Content-Type': it.mime || 'application/octet-stream' }, body: it.bytes
+            });
+            return r.ok;
+        };
+        while (i < items.length) {
+            const batch = [];
+            let size = 0;
+            while (i < items.length && batch.length < MAX_COUNT && (batch.length === 0 || size + items[i].bytes.length <= MAX_BYTES)) {
+                batch.push(items[i]); size += items[i].bytes.length; i++;
+            }
+            if (useBatch) {
+                const res = await this._uploadBatch(eid, batch);
+                if (res === 'no-batch-endpoint') {
+                    useBatch = false; // old server — PUT this batch one by one, then continue
+                    for (const it of batch) { if (!(await putOne(it))) return false; done++; if (onProgress) onProgress(done, total); }
+                    continue;
+                }
+                if (!res) return false;
+                done += batch.length; if (onProgress) onProgress(done, total);
+            } else {
+                for (const it of batch) { if (!(await putOne(it))) return false; done++; if (onProgress) onProgress(done, total); }
+            }
+        }
+        return true;
+    },
     put(record) {
         const task = () => this._put(record);
         const next = this._putChain.then(task, task);
@@ -1881,17 +1938,13 @@ const RemoteStore = {
                 }
             } catch (e) { /* fall back to uploading all */ }
 
-            // Upload missing image blobs as raw binary (no base64 bloat).
-            for (let i = 0; i < toUpload.length; i++) {
-                setSyncStatus('syncing', 'Envoi des images… ' + (i + 1) + '/' + toUpload.length);
-                const blob = toUpload[i];
-                const r = await fetch(b + '/projects/' + id + '/blobs/' + blob.name, {
-                    method: 'PUT',
-                    headers: { ...this._headers(false), 'Content-Type': blob.mime },
-                    body: blob.bytes
+            // Upload missing image blobs — batched (few round-trips), raw binary.
+            if (toUpload.length) {
+                const ok = await this.uploadBlobs(record.id, toUpload, (d, t) => {
+                    setSyncStatus('syncing', 'Envoi des images… ' + d + '/' + t);
                 });
-                if (!r.ok) {
-                    setSyncStatus('error', 'Échec de l’envoi d’une image (HTTP ' + r.status + ')');
+                if (!ok) {
+                    setSyncStatus('error', 'Échec de l’envoi des images');
                     return false;
                 }
             }
@@ -5223,19 +5276,41 @@ function setupEventListeners() {
             if (r.ok) missing = new Set((await r.json()).missing || []);
         } catch (e) { /* can't check — upload everything */ }
 
-        // Pass 2 — upload only the missing blobs, re-reading bytes one at a time.
-        let done = 0;
-        const toUpload = items.filter(it => missing.has(it.name)).length;
-        for (const it of items) {
-            if (missing.has(it.name)) {
-                done++;
-                showUploadProgress('Import des images… (' + done + '/' + toUpload + ')', label || '');
+        // Already-present blobs resume for free.
+        for (const it of items) if (!missing.has(it.name)) map.set(it.src, REF_SCHEME + it.name);
+
+        // Pass 2 — upload the missing blobs in BATCHES (few round-trips). Bytes are
+        // re-read from the ZIP per batch so peak memory stays ~one batch (≤40 MB),
+        // never the whole project.
+        const toUpload = items.filter(it => missing.has(it.name));
+        const eid = encodeURIComponent(data.id);
+        const MAX_BYTES = 40 * 1024 * 1024, MAX_COUNT = 40;
+        let done = 0, useBatch = true, idx = 0;
+        const total = toUpload.length;
+        while (idx < toUpload.length) {
+            const batch = [];
+            let size = 0;
+            while (idx < toUpload.length && batch.length < MAX_COUNT) {
+                const it = toUpload[idx];
                 const read = await readBytes(it.src);
-                if (!read) continue;
-                map.set(it.src, await uploadImportBlob(data.id, read.bytes, it.ext, it.name));
-            } else {
-                map.set(it.src, REF_SCHEME + it.name); // already on the server — resume for free
+                if (!read) { idx++; continue; }
+                if (batch.length > 0 && size + read.bytes.length > MAX_BYTES) break; // send what we have; re-read this one next batch
+                const mime = EXT_TO_MIME[(it.ext || 'png').toLowerCase()] || 'application/octet-stream';
+                batch.push({ name: it.name, bytes: read.bytes, mime, src: it.src, ext: it.ext });
+                size += read.bytes.length; idx++;
             }
+            if (!batch.length) continue;
+            showUploadProgress('Import des images… (' + (done + 1) + '–' + (done + batch.length) + '/' + total + ')', label || '');
+            let res = useBatch ? await RemoteStore._uploadBatch(eid, batch) : 'fallback';
+            if (res === 'no-batch-endpoint' || res === 'fallback') {
+                useBatch = false; // old server (or chosen fallback): PUT one by one
+                for (const x of batch) { await uploadImportBlob(data.id, x.bytes, x.ext, x.name); map.set(x.src, REF_SCHEME + x.name); }
+            } else if (!res) {
+                throw new Error('upload du lot d’images échoué');
+            } else {
+                for (const x of batch) map.set(x.src, REF_SCHEME + x.name);
+            }
+            done += batch.length;
         }
         replaceStrings(data, map);
         showUploadProgress('Enregistrement du projet…', label || '');
