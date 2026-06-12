@@ -915,8 +915,13 @@ function renderPerScreenTextUI() {
     if (!ss || span <= 1) { box.style.display = 'none'; box.innerHTML = ''; return; }
     box.style.display = 'block';
 
-    const txt = ss.text;
-    const lang = txt.currentHeadlineLang || state.currentLanguage || 'en';
+    // Always read the LIVE text object. getText() rebuilds (and reassigns)
+    // screenshot.text on every call, so a reference captured once goes stale the
+    // next time anything renders — writes to it would never reach the renderer.
+    // Each handler below re-fetches via getTextSettings() for the same reason.
+    const txt = getTextSettings();
+    const hl = txt.currentHeadlineLang || 'en';
+    const sl = txt.currentSubheadlineLang || 'en';
     const on = !!txt.perScreenText;
     box.innerHTML =
         '<div class="divider"></div>' +
@@ -927,19 +932,20 @@ function renderPerScreenTextUI() {
         '<div id="per-screen-text-fields" style="display:' + (on ? 'block' : 'none') + '"></div>';
 
     box.querySelector('#per-screen-text-toggle').addEventListener('click', function () {
+        const t = getTextSettings();
         this.classList.toggle('active');
-        txt.perScreenText = this.classList.contains('active');
+        t.perScreenText = this.classList.contains('active');
         // When turning on, seed panel 1 with the existing single text so it
         // doesn't suddenly go blank.
-        if (txt.perScreenText) {
-            txt.panelHeadlines = txt.panelHeadlines || {};
-            txt.panelSubheadlines = txt.panelSubheadlines || {};
-            txt.panelHeadlines[lang] = txt.panelHeadlines[lang] || [];
-            txt.panelSubheadlines[lang] = txt.panelSubheadlines[lang] || [];
-            const emptyH = txt.panelHeadlines[lang].every(v => !v);
-            const emptyS = txt.panelSubheadlines[lang].every(v => !v);
-            if (emptyH && txt.headlines && txt.headlines[lang]) txt.panelHeadlines[lang][0] = txt.headlines[lang];
-            if (emptyS && txt.subheadlines && txt.subheadlines[lang]) txt.panelSubheadlines[lang][0] = txt.subheadlines[lang];
+        if (t.perScreenText) {
+            const h = t.currentHeadlineLang || 'en';
+            const s = t.currentSubheadlineLang || 'en';
+            t.panelHeadlines = t.panelHeadlines || {};
+            t.panelSubheadlines = t.panelSubheadlines || {};
+            t.panelHeadlines[h] = t.panelHeadlines[h] || [];
+            t.panelSubheadlines[s] = t.panelSubheadlines[s] || [];
+            if (t.panelHeadlines[h].every(v => !v) && t.headlines && t.headlines[h]) t.panelHeadlines[h][0] = t.headlines[h];
+            if (t.panelSubheadlines[s].every(v => !v) && t.subheadlines && t.subheadlines[s]) t.panelSubheadlines[s][0] = t.subheadlines[s];
         }
         renderPerScreenTextUI();
         updateCanvas();
@@ -948,18 +954,32 @@ function renderPerScreenTextUI() {
     if (on) {
         txt.panelHeadlines = txt.panelHeadlines || {};
         txt.panelSubheadlines = txt.panelSubheadlines || {};
-        txt.panelHeadlines[lang] = txt.panelHeadlines[lang] || [];
-        txt.panelSubheadlines[lang] = txt.panelSubheadlines[lang] || [];
+        txt.panelHeadlines[hl] = txt.panelHeadlines[hl] || [];
+        txt.panelSubheadlines[sl] = txt.panelSubheadlines[sl] || [];
         const fields = box.querySelector('#per-screen-text-fields');
         let html = '';
         for (let p = 0; p < span; p++) {
             html += '<div class="control-group ps-group"><label class="control-label">Screen ' + (p + 1) + '</label>' +
-                '<textarea class="ps-text ps-headline" data-p="' + p + '" rows="1" placeholder="Headline">' + mcpEscapeHtml(txt.panelHeadlines[lang][p] || '') + '</textarea>' +
-                '<textarea class="ps-text ps-sub" data-p="' + p + '" rows="1" placeholder="Subheadline">' + mcpEscapeHtml(txt.panelSubheadlines[lang][p] || '') + '</textarea></div>';
+                '<textarea class="ps-text ps-headline" data-p="' + p + '" rows="1" placeholder="Headline">' + mcpEscapeHtml(txt.panelHeadlines[hl][p] || '') + '</textarea>' +
+                '<textarea class="ps-text ps-sub" data-p="' + p + '" rows="1" placeholder="Subheadline">' + mcpEscapeHtml(txt.panelSubheadlines[sl][p] || '') + '</textarea></div>';
         }
         fields.innerHTML = html;
-        fields.querySelectorAll('.ps-headline').forEach(t => t.addEventListener('input', () => { txt.panelHeadlines[lang][+t.dataset.p] = t.value; updateCanvas(); }));
-        fields.querySelectorAll('.ps-sub').forEach(t => t.addEventListener('input', () => { txt.panelSubheadlines[lang][+t.dataset.p] = t.value; updateCanvas(); }));
+        fields.querySelectorAll('.ps-headline').forEach(el => el.addEventListener('input', () => {
+            const t = getTextSettings();
+            const h = t.currentHeadlineLang || 'en';
+            t.panelHeadlines = t.panelHeadlines || {};
+            t.panelHeadlines[h] = t.panelHeadlines[h] || [];
+            t.panelHeadlines[h][+el.dataset.p] = el.value;
+            updateCanvas();
+        }));
+        fields.querySelectorAll('.ps-sub').forEach(el => el.addEventListener('input', () => {
+            const t = getTextSettings();
+            const s = t.currentSubheadlineLang || 'en';
+            t.panelSubheadlines = t.panelSubheadlines || {};
+            t.panelSubheadlines[s] = t.panelSubheadlines[s] || [];
+            t.panelSubheadlines[s][+el.dataset.p] = el.value;
+            updateCanvas();
+        }));
     }
 }
 
