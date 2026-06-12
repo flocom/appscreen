@@ -688,7 +688,8 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
         "- text (styling/layout): headlineEnabled, headlineFont, headlineSize, headlineWeight, headlineColor, " +
         "headlineItalic/Underline/Strikethrough, headlineBgColor, headlineBgOpacity, position ('top'|'bottom'), " +
         "offsetY, lineHeight, subheadline* equivalents, subheadlineSpacing, subheadlineOpacity, perScreenText, " +
-        "panelHeadlines/panelSubheadlines, perLanguageLayout, languageSettings{<lang>:{...}} " +
+        "panelTexts[] (per-panorama-screen full text objects when perScreenText is on; legacy " +
+        "panelHeadlines/panelSubheadlines still read as a fallback), perLanguageLayout, languageSettings{<lang>:{...}} " +
         "(for the TEXT CONTENT itself prefer set_screenshot_text)\n" +
         "- background: type, gradient{angle,stops}, solid, image (any supported input form — resolved " +
         "automatically), imageFit, imageBlur, overlayColor, overlayOpacity, noise, noiseIntensity\n" +
