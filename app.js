@@ -140,7 +140,76 @@ function getScreenshotSettings() {
     return screenshot ? screenshot.screenshot : state.defaults.screenshot;
 }
 
+// Which panel the Text tab is currently editing (per-screen panorama mode).
+let __activePanelIndex = 0;
+function getActivePanelIndex() { return __activePanelIndex; }
+function setActivePanelIndex(i) { __activePanelIndex = Math.max(0, i | 0); }
+
+function spanForScreenshot(screenshot) {
+    return (screenshot && screenshot.screenshot && screenshot.screenshot.spanScreens) || 1;
+}
+
+// Ensure container.panelTexts holds `span` full text objects, seeding any missing
+// one from the container's current style/content (and migrating legacy per-panel
+// text captured before full-style panels existed).
+function ensurePanelTexts(container, span) {
+    if (!Array.isArray(container.panelTexts)) container.panelTexts = [];
+    for (let p = 0; p < span; p++) {
+        if (!container.panelTexts[p]) {
+            const seed = JSON.parse(JSON.stringify(container));
+            delete seed.panelTexts;
+            delete seed.panelHeadlines;
+            delete seed.panelSubheadlines;
+            seed.perScreenText = false;
+            const ph = container.panelHeadlines || {};
+            const ps = container.panelSubheadlines || {};
+            Object.keys(ph).forEach(lang => {
+                if (ph[lang] && ph[lang][p]) { seed.headlines = seed.headlines || {}; seed.headlines[lang] = ph[lang][p]; }
+            });
+            Object.keys(ps).forEach(lang => {
+                if (ps[lang] && ps[lang][p]) { seed.subheadlines = seed.subheadlines || {}; seed.subheadlines[lang] = ps[lang][p]; }
+            });
+            container.panelTexts[p] = seed;
+        }
+    }
+}
+
+// Panels follow the container's current language selection so editing/rendering
+// always act on the language the user is viewing.
+function syncPanelLanguage(panel, container) {
+    panel.currentHeadlineLang = container.currentHeadlineLang;
+    panel.currentSubheadlineLang = container.currentSubheadlineLang;
+    panel.currentLayoutLang = container.currentLayoutLang;
+}
+
+// In per-screen panorama mode each panel carries its OWN full text object; the
+// Text tab edits the active panel. Otherwise it edits the screenshot's text.
+function activeTextTarget(screenshot) {
+    const container = screenshot.text;
+    const span = spanForScreenshot(screenshot);
+    if (!container.perScreenText || span <= 1) return container;
+    ensurePanelTexts(container, span);
+    let p = __activePanelIndex;
+    if (p > span - 1) p = span - 1;
+    if (p < 0) p = 0;
+    container.panelTexts[p] = normalizeTextSettings(container.panelTexts[p]);
+    syncPanelLanguage(container.panelTexts[p], container);
+    return container.panelTexts[p];
+}
+
 function getText() {
+    const screenshot = getCurrentScreenshot();
+    if (screenshot) {
+        screenshot.text = normalizeTextSettings(screenshot.text);
+        return activeTextTarget(screenshot);
+    }
+    state.defaults.text = normalizeTextSettings(state.defaults.text);
+    return state.defaults.text;
+}
+
+// The renderer and per-screen UI need the CONTAINER (which holds panelTexts +
+// the perScreenText flag), not the active panel that getText() may redirect to.
+function getContainerText() {
     const screenshot = getCurrentScreenshot();
     if (screenshot) {
         screenshot.text = normalizeTextSettings(screenshot.text);
@@ -587,7 +656,8 @@ function setScreenshotSetting(key, value) {
 function setTextSetting(key, value) {
     const screenshot = getCurrentScreenshot();
     if (screenshot) {
-        screenshot.text[key] = value;
+        screenshot.text = normalizeTextSettings(screenshot.text);
+        activeTextTarget(screenshot)[key] = value;
     }
 }
 
@@ -9319,8 +9389,16 @@ function drawTextHighlight(context, cx, y, textWidth, fontSize, baselineTop, col
     context.restore();
 }
 
-// Panorama: build a per-panel copy of the text settings for screen `p`.
+// Panorama: build the text settings for screen `p`. Each panel has its own full
+// text object (style + content) in container.panelTexts; older projects fall back
+// to per-panel content (panelHeadlines/panelSubheadlines) over the shared style.
 function makePanelTxt(txt, p) {
+    if (Array.isArray(txt.panelTexts) && txt.panelTexts[p]) {
+        txt.panelTexts[p] = normalizeTextSettings(txt.panelTexts[p]);
+        const panel = txt.panelTexts[p];
+        syncPanelLanguage(panel, txt);
+        return panel;
+    }
     const lang = txt.currentHeadlineLang || 'en';
     const slang = txt.currentSubheadlineLang || 'en';
     const ph = (txt.panelHeadlines && txt.panelHeadlines[lang] && txt.panelHeadlines[lang][p]) || '';
@@ -10056,7 +10134,7 @@ function drawText() {
     // Unified with the shared renderer so auto-fit, text background, spacing and
     // per-screen panorama all behave identically on the main canvas and in
     // previews/export.
-    drawTextWithPanorama(ctx, getCanvasDimensions(), getTextSettings());
+    drawTextWithPanorama(ctx, getCanvasDimensions(), getContainerText());
 }
 
 function drawNoise() {

@@ -908,76 +908,58 @@ function renderPerScreenTextUI() {
     const tab = document.getElementById('tab-text');
     if (!tab) return;
     let box = document.getElementById('per-screen-text-box');
-    if (!box) { box = document.createElement('div'); box.id = 'per-screen-text-box'; tab.appendChild(box); }
+    if (!box) {
+        // Sits at the TOP of the Text tab: pick a screen, then edit it with the
+        // controls below (which route to that screen's own text object).
+        box = document.createElement('div');
+        box.id = 'per-screen-text-box';
+        tab.insertBefore(box, tab.firstChild);
+    }
 
     const ss = state.screenshots[state.selectedIndex];
     const span = (ss && ss.screenshot && ss.screenshot.spanScreens) || 1;
     if (!ss || span <= 1) { box.style.display = 'none'; box.innerHTML = ''; return; }
     box.style.display = 'block';
 
-    // Always read the LIVE text object. getText() rebuilds (and reassigns)
-    // screenshot.text on every call, so a reference captured once goes stale the
-    // next time anything renders — writes to it would never reach the renderer.
-    // Each handler below re-fetches via getTextSettings() for the same reason.
-    const txt = getTextSettings();
-    const hl = txt.currentHeadlineLang || 'en';
-    const sl = txt.currentSubheadlineLang || 'en';
-    const on = !!txt.perScreenText;
-    box.innerHTML =
-        '<div class="divider"></div>' +
+    // Read the CONTAINER (not getText(), which redirects to the active panel) —
+    // the perScreenText flag and panel list live on the container.
+    const container = getContainerText();
+    const on = !!container.perScreenText;
+    const active = (typeof getActivePanelIndex === 'function')
+        ? Math.min(getActivePanelIndex(), span - 1) : 0;
+
+    let html =
         '<div class="control-group"><div class="toggle-row">' +
         '<span class="toggle-label">Text per screen (' + span + ' panels)</span>' +
         '<div class="toggle' + (on ? ' active' : '') + '" id="per-screen-text-toggle"></div>' +
-        '</div></div>' +
-        '<div id="per-screen-text-fields" style="display:' + (on ? 'block' : 'none') + '"></div>';
+        '</div>' +
+        '<p class="control-hint" style="margin-top:6px;">Each screen gets its own headline, subheadline and styling. Pick a screen, then edit it with the controls below.</p>' +
+        '</div>';
+    if (on) {
+        html += '<div class="control-group"><div class="ps-screen-tabs">';
+        for (let p = 0; p < span; p++) {
+            html += '<button type="button" class="ps-screen-tab' + (p === active ? ' active' : '') +
+                '" data-p="' + p + '">Screen ' + (p + 1) + '</button>';
+        }
+        html += '</div></div>';
+    }
+    html += '<div class="divider"></div>';
+    box.innerHTML = html;
 
     box.querySelector('#per-screen-text-toggle').addEventListener('click', function () {
-        const t = getTextSettings();
-        this.classList.toggle('active');
-        t.perScreenText = this.classList.contains('active');
-        // When turning on, seed panel 1 with the existing single text so it
-        // doesn't suddenly go blank.
-        if (t.perScreenText) {
-            const h = t.currentHeadlineLang || 'en';
-            const s = t.currentSubheadlineLang || 'en';
-            t.panelHeadlines = t.panelHeadlines || {};
-            t.panelSubheadlines = t.panelSubheadlines || {};
-            t.panelHeadlines[h] = t.panelHeadlines[h] || [];
-            t.panelSubheadlines[s] = t.panelSubheadlines[s] || [];
-            if (t.panelHeadlines[h].every(v => !v) && t.headlines && t.headlines[h]) t.panelHeadlines[h][0] = t.headlines[h];
-            if (t.panelSubheadlines[s].every(v => !v) && t.subheadlines && t.subheadlines[s]) t.panelSubheadlines[s][0] = t.subheadlines[s];
-        }
-        renderPerScreenTextUI();
+        const c = getContainerText();
+        const turnOn = !c.perScreenText;
+        c.perScreenText = turnOn;
+        if (turnOn && typeof ensurePanelTexts === 'function') ensurePanelTexts(c, span);
+        if (turnOn && typeof setActivePanelIndex === 'function') setActivePanelIndex(0);
+        if (typeof syncUIWithState === 'function') syncUIWithState();
         updateCanvas();
     });
 
     if (on) {
-        txt.panelHeadlines = txt.panelHeadlines || {};
-        txt.panelSubheadlines = txt.panelSubheadlines || {};
-        txt.panelHeadlines[hl] = txt.panelHeadlines[hl] || [];
-        txt.panelSubheadlines[sl] = txt.panelSubheadlines[sl] || [];
-        const fields = box.querySelector('#per-screen-text-fields');
-        let html = '';
-        for (let p = 0; p < span; p++) {
-            html += '<div class="control-group ps-group"><label class="control-label">Screen ' + (p + 1) + '</label>' +
-                '<textarea class="ps-text ps-headline" data-p="' + p + '" rows="1" placeholder="Headline">' + mcpEscapeHtml(txt.panelHeadlines[hl][p] || '') + '</textarea>' +
-                '<textarea class="ps-text ps-sub" data-p="' + p + '" rows="1" placeholder="Subheadline">' + mcpEscapeHtml(txt.panelSubheadlines[sl][p] || '') + '</textarea></div>';
-        }
-        fields.innerHTML = html;
-        fields.querySelectorAll('.ps-headline').forEach(el => el.addEventListener('input', () => {
-            const t = getTextSettings();
-            const h = t.currentHeadlineLang || 'en';
-            t.panelHeadlines = t.panelHeadlines || {};
-            t.panelHeadlines[h] = t.panelHeadlines[h] || [];
-            t.panelHeadlines[h][+el.dataset.p] = el.value;
-            updateCanvas();
-        }));
-        fields.querySelectorAll('.ps-sub').forEach(el => el.addEventListener('input', () => {
-            const t = getTextSettings();
-            const s = t.currentSubheadlineLang || 'en';
-            t.panelSubheadlines = t.panelSubheadlines || {};
-            t.panelSubheadlines[s] = t.panelSubheadlines[s] || [];
-            t.panelSubheadlines[s][+el.dataset.p] = el.value;
+        box.querySelectorAll('.ps-screen-tab').forEach(btn => btn.addEventListener('click', () => {
+            if (typeof setActivePanelIndex === 'function') setActivePanelIndex(+btn.dataset.p);
+            if (typeof syncUIWithState === 'function') syncUIWithState();
             updateCanvas();
         }));
     }
@@ -1009,8 +991,19 @@ function syncTextSpacingAndPerScreen() {
 
 if (typeof syncUIWithState === 'function') {
     const _origSyncUI2 = syncUIWithState;
+    let _psLastIndex = -1;
     // eslint-disable-next-line no-global-assign
-    syncUIWithState = function () { _origSyncUI2.apply(this, arguments); try { syncTextSpacingAndPerScreen(); } catch (e) {} };
+    syncUIWithState = function () {
+        // Reset the per-screen panel selection when the selected screenshot
+        // changes, BEFORE the Text tab reloads — otherwise the controls would
+        // load a stale panel index from the previously edited screenshot.
+        if (_psLastIndex !== state.selectedIndex) {
+            if (typeof setActivePanelIndex === 'function') { try { setActivePanelIndex(0); } catch (e) {} }
+            _psLastIndex = state.selectedIndex;
+        }
+        _origSyncUI2.apply(this, arguments);
+        try { syncTextSpacingAndPerScreen(); } catch (e) {}
+    };
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initTextSpacingAndPerScreen);
