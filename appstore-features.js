@@ -885,12 +885,165 @@ function initCopyDesignButton() {
 // Backwards-compatible name (kept in case other code references it).
 function initSyncDesignButton() { initCopyDesignButton(); }
 
+// ============================================================================
+// Copy text layout/options + device placement/size from ANOTHER project onto
+// the current one (e.g. reuse an iPhone presentation for an iPad project).
+// Screenshots are matched by position; text CONTENT and images are preserved.
+// ============================================================================
+
+// Text fields that describe styling/layout — NOT the text content itself.
+const COPY_TEXT_STYLE_KEYS = [
+    'headlineEnabled', 'headlineFont', 'headlineSize', 'headlineWeight', 'headlineItalic',
+    'headlineUnderline', 'headlineStrikethrough', 'headlineColor', 'headlineBgColor', 'headlineBgOpacity',
+    'subheadlineEnabled', 'subheadlineFont', 'subheadlineSize', 'subheadlineWeight', 'subheadlineItalic',
+    'subheadlineUnderline', 'subheadlineStrikethrough', 'subheadlineColor', 'subheadlineOpacity',
+    'subheadlineBgColor', 'subheadlineBgOpacity', 'subheadlineSpacing',
+    'position', 'offsetY', 'lineHeight', 'perLanguageLayout', 'perScreenText'
+];
+
+// Device fields = placement/size/decoration. Deliberately EXCLUDES the device-model
+// selectors (deviceModel2D/use3D/device3D) so copying an iPhone layout onto an iPad
+// project doesn't turn the iPad back into an iPhone.
+const COPY_DEVICE_KEYS = ['scale', 'x', 'y', 'rotation', 'perspective', 'cornerRadius', 'bezelEnabled', 'spanScreens'];
+const COPY_DEVICE_OBJECTS = ['rotation3D', 'shadow', 'frame'];
+
+function _copyClone(v) { return JSON.parse(JSON.stringify(v)); }
+
+function _blankTextContent(t) {
+    t.headlines = {}; t.subheadlines = {};
+    delete t.panelHeadlines; delete t.panelSubheadlines; delete t.panelTexts;
+}
+
+// Copy only styling/layout from source text onto target, preserving target content.
+function applyTextStyle(targetText, sourceText) {
+    COPY_TEXT_STYLE_KEYS.forEach(k => { if (k in sourceText) targetText[k] = sourceText[k]; });
+    if (sourceText.languageSettings) targetText.languageSettings = _copyClone(sourceText.languageSettings);
+    // Panorama: each panel carries its own style — copy per panel, keep content.
+    if (Array.isArray(sourceText.panelTexts)) {
+        if (!Array.isArray(targetText.panelTexts)) targetText.panelTexts = [];
+        sourceText.panelTexts.forEach((sp, p) => {
+            if (!sp) return;
+            if (targetText.panelTexts[p]) {
+                applyTextStyle(targetText.panelTexts[p], sp);
+            } else {
+                const tp = _copyClone(sp);
+                _blankTextContent(tp);
+                targetText.panelTexts[p] = tp;
+            }
+        });
+    }
+}
+
+function applyDevicePlacement(targetSs, sourceSs) {
+    COPY_DEVICE_KEYS.forEach(k => { if (k in sourceSs) targetSs[k] = sourceSs[k]; });
+    COPY_DEVICE_OBJECTS.forEach(k => { if (sourceSs[k]) targetSs[k] = _copyClone(sourceSs[k]); });
+}
+
+async function copyLayoutFromProject(sourceId, copyText, copyDevice) {
+    if (!copyText && !copyDevice) return;
+    if (typeof RemoteStore === 'undefined' || !RemoteStore.get) {
+        if (typeof showAppAlert === 'function') await showAppAlert('Le serveur n’est pas disponible.', 'error');
+        return;
+    }
+    let rec;
+    try { rec = await RemoteStore.get(sourceId); } catch (e) { rec = null; }
+    if (!rec || !Array.isArray(rec.screenshots) || rec.screenshots.length === 0) {
+        if (typeof showAppAlert === 'function') await showAppAlert('Impossible de lire le projet source.', 'error');
+        return;
+    }
+    const n = Math.min(state.screenshots.length, rec.screenshots.length);
+    let count = 0;
+    for (let i = 0; i < n; i++) {
+        const src = rec.screenshots[i];
+        const tgt = state.screenshots[i];
+        if (!src || !tgt) continue;
+        if (copyDevice && src.screenshot && tgt.screenshot) applyDevicePlacement(tgt.screenshot, src.screenshot);
+        if (copyText && src.text) {
+            if (typeof normalizeTextSettings === 'function') tgt.text = normalizeTextSettings(tgt.text);
+            applyTextStyle(tgt.text, src.text);
+        }
+        count++;
+    }
+    if (typeof setActivePanelIndex === 'function') setActivePanelIndex(0);
+    if (typeof syncUIWithState === 'function') syncUIWithState();
+    if (typeof updateScreenshotList === 'function') updateScreenshotList();
+    if (typeof updateCanvas === 'function') updateCanvas();
+
+    const name = (Array.isArray(projects) ? (projects.find(p => p.id === sourceId) || {}).name : '') || 'projet source';
+    let msg = `Mise en page copiée depuis « ${name} » sur ${count} écran(s).`;
+    if (rec.screenshots.length !== state.screenshots.length) {
+        msg += ` (Source : ${rec.screenshots.length} écran(s) — actuel : ${state.screenshots.length}.)`;
+    }
+    if (typeof showAppAlert === 'function') await showAppAlert(msg, 'info');
+}
+
+function refreshCopyLayoutSource() {
+    const sel = document.getElementById('copy-layout-source');
+    if (!sel) return;
+    const list = (Array.isArray(projects) ? projects : []).filter(p => p.id !== currentProjectId);
+    const prev = sel.value;
+    sel.innerHTML = '';
+    if (list.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = ''; opt.textContent = 'Aucun autre projet';
+        sel.appendChild(opt);
+        sel.disabled = true;
+        return;
+    }
+    sel.disabled = false;
+    list.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        const cnt = (typeof p.screenshotCount === 'number') ? ` (${p.screenshotCount})` : '';
+        opt.textContent = (p.name && p.name.trim() ? p.name : p.id) + cnt;
+        sel.appendChild(opt);
+    });
+    if (prev && list.some(p => p.id === prev)) sel.value = prev;
+}
+
+function initCopyLayoutModal() {
+    const openBtn = document.getElementById('copy-layout-project-btn');
+    const modal = document.getElementById('copy-layout-modal');
+    if (!openBtn || !modal) return;
+    const cancel = document.getElementById('copy-layout-cancel');
+    const confirm = document.getElementById('copy-layout-confirm');
+    const close = () => modal.classList.remove('visible');
+
+    openBtn.addEventListener('click', async () => {
+        modal.classList.add('visible');
+        refreshCopyLayoutSource();
+        // Pull the latest project list from the server, then refresh again.
+        if (typeof syncWithRemote === 'function') {
+            try { await syncWithRemote(); refreshCopyLayoutSource(); } catch (e) {}
+        }
+    });
+    if (cancel) cancel.addEventListener('click', close);
+    modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    if (confirm) confirm.addEventListener('click', async () => {
+        const sel = document.getElementById('copy-layout-source');
+        const sourceId = sel && sel.value;
+        if (!sourceId) {
+            if (typeof showAppAlert === 'function') await showAppAlert('Choisissez un projet source.', 'info');
+            return;
+        }
+        const copyText = !!(document.getElementById('copy-layout-text') || {}).checked;
+        const copyDevice = !!(document.getElementById('copy-layout-device') || {}).checked;
+        if (!copyText && !copyDevice) {
+            if (typeof showAppAlert === 'function') await showAppAlert('Sélectionnez au moins un élément à copier.', 'info');
+            return;
+        }
+        close();
+        await copyLayoutFromProject(sourceId, copyText, copyDevice);
+    });
+}
+
 function initAllExtras() {
     initAppStoreFeatures();
     initCanvasViewToggle();
     initDeviceTextExtras();
     initDeleteShortcut();
     initCopyDesignButton();
+    initCopyLayoutModal();
     initHistoryButtons();
     try { syncDeviceTextExtras(); } catch (e) {}
 }

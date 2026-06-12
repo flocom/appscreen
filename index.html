@@ -158,6 +158,13 @@
                                 <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                             </svg>
                         </button>
+                        <button class="project-btn" id="copy-layout-project-btn" title="Copier la mise en page (disposition du texte + emplacement de l'appareil) depuis un autre projet">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="3" width="8" height="8" rx="1"/>
+                                <rect x="13" y="13" width="8" height="8" rx="1"/>
+                                <path d="M11 7h4a2 2 0 0 1 2 2v4"/>
+                            </svg>
+                        </button>
                         <button class="project-btn danger" id="delete-project-btn" title="Delete Project">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="3,6 5,6 21,6"/>
@@ -1699,6 +1706,33 @@
             <div class="modal-buttons">
                 <button class="modal-btn modal-btn-cancel" id="delete-project-cancel">Cancel</button>
                 <button class="modal-btn modal-btn-confirm" id="delete-project-confirm">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Copy Layout From Another Project Modal -->
+    <div class="modal-overlay" id="copy-layout-modal">
+        <div class="modal">
+            <div class="modal-icon" style="background: rgba(10, 132, 255, 0.2);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent);" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="8" height="8" rx="1"/>
+                    <rect x="13" y="13" width="8" height="8" rx="1"/>
+                    <path d="M11 7h4a2 2 0 0 1 2 2v4"/>
+                </svg>
+            </div>
+            <h3 class="modal-title">Copier la mise en page d'un projet</h3>
+            <p class="modal-message">Copie la disposition/les options du texte et l'emplacement/la taille de l'appareil depuis un autre projet vers le projet actuel, écran par écran (par position). Idéal pour reprendre une présentation iPhone vers iPad. Vos textes et vos images ne sont pas modifiés.</p>
+            <div class="control-group" style="margin: 16px 0; text-align: left;">
+                <label class="control-label">Copier depuis le projet</label>
+                <select id="copy-layout-source" class="control-select"></select>
+            </div>
+            <div class="control-group" style="margin: 16px 0; text-align: left;">
+                <label class="copy-design-checkbox"><input type="checkbox" id="copy-layout-text" checked><span>Disposition &amp; options du texte</span></label>
+                <label class="copy-design-checkbox" style="margin-top: 8px;"><input type="checkbox" id="copy-layout-device" checked><span>Emplacement &amp; taille de l'appareil</span></label>
+            </div>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" id="copy-layout-cancel">Annuler</button>
+                <button class="modal-btn modal-btn-confirm" id="copy-layout-confirm" style="background: var(--accent);">Copier</button>
             </div>
         </div>
     </div>
