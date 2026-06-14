@@ -428,10 +428,11 @@ function renderAlvCell(cell) {
     wrap.className = 'alv-cell-canvas';
     wrap.appendChild(canvas);
     if (overlaps) {
+        const ssAutoFit = !!(ss.text && ss.text.autoFit);
         const badge = document.createElement('div');
-        badge.className = 'alv-overlap-badge' + (state.autoFitText ? ' fixed' : '');
-        badge.textContent = state.autoFitText ? '⤓ fit' : '⚠ overlap';
-        badge.title = state.autoFitText
+        badge.className = 'alv-overlap-badge' + (ssAutoFit ? ' fixed' : '');
+        badge.textContent = ssAutoFit ? '⤓ fit' : '⚠ overlap';
+        badge.title = ssAutoFit
             ? 'Text would overlap the image — auto-fitted to fit'
             : 'Text overlaps the image in this language — enable Auto-fit text';
         wrap.appendChild(badge);
@@ -1209,8 +1210,18 @@ function ogFlag(lang) {
 }
 
 function initOverlapGuard() {
-    try { state.autoFitText = localStorage.getItem('autoFitText') === '1'; } catch (e) { state.autoFitText = false; }
     renderOverlapGuardUI();
+}
+
+// Auto-fit is stored per screenshot (text.autoFit). Read/write the CURRENT
+// screenshot's flag (falling back to project defaults when nothing is selected).
+function ogGetAutoFit() {
+    try { return !!(typeof getContainerText === 'function' && getContainerText().autoFit); } catch (e) { return false; }
+}
+function ogSetAutoFit(on) {
+    try {
+        if (typeof getContainerText === 'function') getContainerText().autoFit = on;
+    } catch (e) {}
 }
 
 function renderOverlapGuardUI() {
@@ -1225,15 +1236,14 @@ function renderOverlapGuardUI() {
     }
     box.innerHTML =
         '<div class="og-row">' +
-        '  <div class="og-title">Auto-fit text <span class="og-sub">avoid image overlap</span></div>' +
-        '  <div class="toggle' + (state.autoFitText ? ' active' : '') + '" id="autofit-toggle"></div>' +
+        '  <div class="og-title">Auto-fit text <span class="og-sub">this screen · avoid image overlap</span></div>' +
+        '  <div class="toggle' + (ogGetAutoFit() ? ' active' : '') + '" id="autofit-toggle"></div>' +
         '</div>' +
         '<div class="og-status" id="autofit-status"></div>';
 
     box.querySelector('#autofit-toggle').addEventListener('click', function () {
         this.classList.toggle('active');
-        state.autoFitText = this.classList.contains('active');
-        try { localStorage.setItem('autoFitText', state.autoFitText ? '1' : '0'); } catch (e) {}
+        ogSetAutoFit(this.classList.contains('active'));
         updateCanvas();
         updateOverlapStatus();
         const view = document.getElementById('all-languages-view');
@@ -1242,7 +1252,14 @@ function renderOverlapGuardUI() {
     updateOverlapStatus();
 }
 
+// Keep the toggle in sync with the selected screenshot's flag (called on switch).
+function updateAutoFitToggle() {
+    const t = document.getElementById('autofit-toggle');
+    if (t) t.classList.toggle('active', ogGetAutoFit());
+}
+
 function updateOverlapStatus() {
+    updateAutoFitToggle();
     const el = document.getElementById('autofit-status');
     if (!el) return;
     let langs = [];
@@ -1254,7 +1271,7 @@ function updateOverlapStatus() {
     const flags = langs.map(ogFlag).join(' ');
     el.innerHTML = '<span class="og-warn">⚠ Overlap in ' + langs.length + ' language' + (langs.length > 1 ? 's' : '') + ':</span> ' +
         '<span class="og-flags">' + flags + '</span>' +
-        '<span class="og-note">' + (state.autoFitText ? ' — auto-fitted to fit.' : ' — turn on Auto-fit to shrink.') + '</span>';
+        '<span class="og-note">' + (ogGetAutoFit() ? ' — auto-fitted to fit.' : ' — turn on Auto-fit to shrink.') + '</span>';
 }
 
 initOverlapGuard();
@@ -1270,5 +1287,9 @@ function scheduleOverlapStatus() {
 if (typeof syncUIWithState === 'function') {
     const _origSyncUIOG = syncUIWithState;
     // eslint-disable-next-line no-global-assign
-    syncUIWithState = function () { _origSyncUIOG.apply(this, arguments); scheduleOverlapStatus(); };
+    syncUIWithState = function () {
+        _origSyncUIOG.apply(this, arguments);
+        try { updateAutoFitToggle(); } catch (e) {}
+        scheduleOverlapStatus();
+    };
 }

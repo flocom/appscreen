@@ -111,6 +111,13 @@ const state = {
 
 const baseTextDefaults = JSON.parse(JSON.stringify(state.defaults.text));
 
+// Legacy migration: auto-fit text used to be a single global toggle persisted in
+// localStorage. It is now stored per screenshot (text.autoFit). For screenshots
+// saved before this change (no autoFit key), fall back to the old global value so
+// existing users keep their preference until they toggle each screen.
+let legacyAutoFitDefault = false;
+try { legacyAutoFitDefault = localStorage.getItem('autoFitText') === '1'; } catch (e) {}
+
 // Runtime-only state (not persisted)
 let selectedElementId = null;
 let selectedPopoutId = null;
@@ -268,6 +275,8 @@ function normalizeTextSettings(text) {
     merged.headlineLanguages = merged.headlineLanguages || ['en'];
     merged.currentHeadlineLang = merged.currentHeadlineLang || merged.headlineLanguages[0] || 'en';
     merged.currentLayoutLang = merged.currentLayoutLang || merged.currentHeadlineLang || 'en';
+
+    if (typeof merged.autoFit !== 'boolean') merged.autoFit = legacyAutoFitDefault;
 
     merged.subheadlines = merged.subheadlines || { en: '' };
     merged.subheadlineLanguages = merged.subheadlineLanguages || ['en'];
@@ -8147,6 +8156,10 @@ function createNewScreenshot(img, src, name, lang, deviceType) {
     const textDefaults = normalizeTextSettings(state.defaults.text);
     state.defaults.text = textDefaults;
 
+    // Newly created screens default to Auto-fit text on (per-screen setting).
+    const newText = JSON.parse(JSON.stringify(textDefaults));
+    newText.autoFit = true;
+
     // Each screenshot gets its own copy of all settings from defaults
     state.screenshots.push({
         image: img || null, // Keep for legacy compatibility
@@ -8155,7 +8168,7 @@ function createNewScreenshot(img, src, name, lang, deviceType) {
         localizedImages: localizedImages,
         background: JSON.parse(JSON.stringify(state.defaults.background)),
         screenshot: JSON.parse(JSON.stringify(state.defaults.screenshot)),
-        text: JSON.parse(JSON.stringify(textDefaults)),
+        text: newText,
         elements: JSON.parse(JSON.stringify(state.defaults.elements || [])),
         popouts: [],
         // Legacy overrides for backwards compatibility
@@ -9397,6 +9410,7 @@ function makePanelTxt(txt, p) {
         txt.panelTexts[p] = normalizeTextSettings(txt.panelTexts[p]);
         const panel = txt.panelTexts[p];
         syncPanelLanguage(panel, txt);
+        panel.autoFit = txt.autoFit;
         return panel;
     }
     const lang = txt.currentHeadlineLang || 'en';
@@ -9524,7 +9538,7 @@ function drawTextToContext(context, dims, txt) {
     // Auto-fit: reduce the FONT SIZE (not the width) so the text reflows over the
     // same full width and only gets shorter, avoiding overlap with the device.
     let fontScale = 1;
-    if (typeof state !== 'undefined' && state.autoFitText) {
+    if (txt && txt.autoFit) {
         const fit = computeTextFit(context, dims, txt);
         if (fit.overlaps && fit.fontScale < 0.999) fontScale = fit.fontScale;
     }
