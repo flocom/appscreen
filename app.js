@@ -9491,18 +9491,32 @@ function textVerticalExtent(context, dims, txt, fontScale) {
     return { top, bottom };
 }
 
-// Compute whether the text overlaps the device image, and the scale needed to
-// fit it (1 = fits). Uses the last drawn device rect (window.__imgRect).
+// Compute whether the text overflows its allotted space, and the scale needed to
+// fit it (1 = fits). The text must clear both the device image (last drawn rect in
+// window.__imgRect) AND the canvas edge, so big text is never clipped — it shrinks
+// to fit even when there is no device image on the screen.
 function computeTextFit(context, dims, txt) {
     const rect = (typeof window !== 'undefined') ? window.__imgRect : null;
-    if (!rect || !rect.has) return { scale: 1, fontScale: 1, overlaps: false };
     const ext = textVerticalExtent(context, dims, txt, 1);
     if (!ext) return { scale: 1, fontScale: 1, overlaps: false };
     const isTop = getEffectiveLayout(txt, getTextLayoutLanguage(txt)).position === 'top';
-    const gap = dims.height * 0.02;
+    const gap = dims.height * 0.02;   // clearance from the device image
+    const edge = dims.height * 0.02;  // margin kept from the canvas edge
+    const hasDevice = !!(rect && rect.has);
     const blockH = ext.bottom - ext.top;
-    // Space available between the text's fixed anchor edge and the device image.
-    const avail = isTop ? (rect.y - gap) - ext.top : ext.bottom - (rect.y + rect.h + gap);
+    // The text is anchored at a fixed edge (top of the block for 'top', bottom for
+    // 'bottom') and grows toward the opposite side. Space available is the distance
+    // from that anchor to the nearest limit: the device image or the canvas edge.
+    let avail;
+    if (isTop) {
+        let limit = dims.height - edge; // canvas bottom edge
+        if (hasDevice) limit = Math.min(limit, rect.y - gap); // device top edge
+        avail = limit - ext.top;
+    } else {
+        let limit = edge; // canvas top edge
+        if (hasDevice) limit = Math.max(limit, rect.y + rect.h + gap); // device bottom edge
+        avail = ext.bottom - limit;
+    }
     const overlaps = blockH > 0 && blockH > avail;
     if (!overlaps) return { scale: 1, fontScale: 1, overlaps: false };
     // Find the largest font scale whose re-wrapped block fits the available height.
@@ -9536,7 +9550,8 @@ function drawTextToContext(context, dims, txt) {
     if (!headline && !subheadline) return;
 
     // Auto-fit: reduce the FONT SIZE (not the width) so the text reflows over the
-    // same full width and only gets shorter, avoiding overlap with the device.
+    // same full width and only gets shorter, keeping it clear of the device and
+    // inside the canvas so it is never clipped.
     let fontScale = 1;
     if (txt && txt.autoFit) {
         const fit = computeTextFit(context, dims, txt);
