@@ -707,7 +707,9 @@ const languageFlags = {
     'hi': '🇮🇳', 'tr': '🇹🇷', 'pl': '🇵🇱', 'sv': '🇸🇪', 'da': '🇩🇰',
     'no': '🇳🇴', 'fi': '🇫🇮', 'th': '🇹🇭', 'vi': '🇻🇳', 'id': '🇮🇩',
     'uk': '🇺🇦', 'ca': '🇪🇸', 'cs': '🇨🇿', 'el': '🇬🇷', 'he': '🇮🇱',
-    'hr': '🇭🇷', 'hu': '🇭🇺', 'ms': '🇲🇾', 'ro': '🇷🇴', 'sk': '🇸🇰'
+    'hr': '🇭🇷', 'hu': '🇭🇺', 'ms': '🇲🇾', 'ro': '🇷🇴', 'sk': '🇸🇰',
+    'sl': '🇸🇮', 'bn': '🇧🇩', 'gu': '🇮🇳', 'kn': '🇮🇳', 'ml': '🇮🇳',
+    'mr': '🇮🇳', 'or': '🇮🇳', 'pa': '🇮🇳', 'ta': '🇮🇳', 'te': '🇮🇳', 'ur': '🇵🇰'
 };
 
 // Google Fonts configuration
@@ -6731,7 +6733,7 @@ let currentTranslateTarget = null;
 const languageNames = {
     'en': 'English (US)', 'en-au': 'English (Australia)', 'en-ca': 'English (Canada)',
     'en-gb': 'English (UK)', 'de': 'German', 'fr': 'French', 'fr-ca': 'French (Canada)',
-    'es': 'Spanish', 'es-mx': 'Spanish (Mexico)', 'it': 'Italian',
+    'es': 'Spanish (Spain)', 'es-mx': 'Spanish (Mexico)', 'it': 'Italian',
     'pt': 'Portuguese (Portugal)', 'pt-br': 'Portuguese (Brazil)',
     'nl': 'Dutch', 'ru': 'Russian', 'ja': 'Japanese', 'ko': 'Korean',
     'zh': 'Chinese (Simplified)', 'zh-tw': 'Chinese (Traditional)', 'ar': 'Arabic',
@@ -6739,7 +6741,10 @@ const languageNames = {
     'da': 'Danish', 'no': 'Norwegian', 'fi': 'Finnish', 'th': 'Thai',
     'vi': 'Vietnamese', 'id': 'Indonesian', 'uk': 'Ukrainian',
     'ca': 'Catalan', 'cs': 'Czech', 'el': 'Greek', 'he': 'Hebrew',
-    'hr': 'Croatian', 'hu': 'Hungarian', 'ms': 'Malay', 'ro': 'Romanian', 'sk': 'Slovak'
+    'hr': 'Croatian', 'hu': 'Hungarian', 'ms': 'Malay', 'ro': 'Romanian', 'sk': 'Slovak',
+    'sl': 'Slovenian', 'bn': 'Bangla', 'gu': 'Gujarati', 'kn': 'Kannada',
+    'ml': 'Malayalam', 'mr': 'Marathi', 'or': 'Odia', 'pa': 'Punjabi',
+    'ta': 'Tamil', 'te': 'Telugu', 'ur': 'Urdu'
 };
 
 function openTranslateModal(target) {
