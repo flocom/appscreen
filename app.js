@@ -109,6 +109,7 @@ const state = {
             // breaking any word across lines.
             textZone: {
                 enabled: false,
+                uniform: true,
                 x: 8,
                 y: 6,
                 width: 84,
@@ -292,7 +293,7 @@ function normalizeTextSettings(text) {
     // Text zone: keep a complete rectangle even for projects saved before this
     // feature shipped (or with a partial zone object).
     merged.textZone = Object.assign(
-        { enabled: false, x: 8, y: 6, width: 84, height: 26 },
+        { enabled: false, uniform: true, x: 8, y: 6, width: 84, height: 26 },
         (merged.textZone && typeof merged.textZone === 'object') ? merged.textZone : {}
     );
 
@@ -7880,6 +7881,9 @@ function updateTextZoneUI() {
     toggle.classList.toggle('active', enabled);
     if (controls) controls.style.display = enabled ? '' : 'none';
 
+    const uniformToggle = document.getElementById('text-zone-uniform-toggle');
+    if (uniformToggle) uniformToggle.classList.toggle('active', z.uniform !== false);
+
     const setSlider = (id, val) => {
         const s = document.getElementById(id);
         const v = document.getElementById(id + '-value');
@@ -7914,6 +7918,17 @@ function setupTextZoneControls() {
         updateTextZoneUI();
         updateCanvas();
     });
+
+    const uniformToggle = document.getElementById('text-zone-uniform-toggle');
+    if (uniformToggle) {
+        uniformToggle.addEventListener('click', () => {
+            const z = getTextZone();
+            if (!z) return;
+            z.uniform = (z.uniform === false); // toggle (undefined counts as on)
+            updateTextZoneUI();
+            updateCanvas();
+        });
+    }
 
     const bindSlider = (id, key) => {
         const el = document.getElementById(id);
@@ -9751,10 +9766,11 @@ function maxWordWidth(context, txt, fontScale) {
     return maxW;
 }
 
-// Font scale (≤ 1) that makes the whole text block fit inside the zone rectangle:
-// it reflows at the zone width, fits within the zone height, and shrinks further if
-// needed so the widest single word still fits on one line (no mid-word break).
-function computeZoneFit(context, dims, txt, zone) {
+// Font scale (≤ 1) that makes the whole text block fit inside the zone rectangle
+// for the language currently selected on `txt`: it reflows at the zone width, fits
+// within the zone height, and shrinks further if needed so the widest single word
+// still fits on one line (no mid-word break).
+function zoneFitForText(context, dims, txt, zone) {
     const zw = Math.max(1, dims.width * (zone.width / 100));
     const zh = Math.max(1, dims.height * (zone.height / 100));
     const FLOOR = 0.1;
@@ -9779,6 +9795,28 @@ function computeZoneFit(context, dims, txt, zone) {
     const mw = maxWordWidth(context, txt, 1);
     if (mw > 0) best = Math.min(best, zw / mw);
     return Math.max(FLOOR, Math.min(1, best));
+}
+
+// Font scale for the zone. By default ("uniform") the scale is the smallest that
+// fits EVERY project language, then applied to all of them — so the text stays
+// inside the zone and keeps a consistent size no matter the language. With uniform
+// off, each language is fitted independently (only the current one is measured).
+function computeZoneFit(context, dims, txt, zone) {
+    const langs = (typeof state !== 'undefined' && Array.isArray(state.projectLanguages))
+        ? state.projectLanguages : null;
+    if (zone.uniform !== false && langs && langs.length > 1) {
+        let best = 1;
+        for (const L of langs) {
+            const t = Object.assign({}, txt, {
+                currentHeadlineLang: L,
+                currentSubheadlineLang: L,
+                currentLayoutLang: L
+            });
+            best = Math.min(best, zoneFitForText(context, dims, t, zone));
+        }
+        return best;
+    }
+    return zoneFitForText(context, dims, txt, zone);
 }
 
 function drawTextToContext(context, dims, txt) {
