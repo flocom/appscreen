@@ -9766,35 +9766,41 @@ function maxWordWidth(context, txt, fontScale) {
     return maxW;
 }
 
-// Font scale (≤ 1) that makes the whole text block fit inside the zone rectangle
-// for the language currently selected on `txt`: it reflows at the zone width, fits
-// within the zone height, and shrinks further if needed so the widest single word
-// still fits on one line (no mid-word break).
+// Font scale that makes the whole text block FILL the zone rectangle for the
+// language currently selected on `txt`: it reflows at the zone width and the font
+// grows or shrinks so the wrapped block is as large as possible while still fitting
+// the zone height, and the widest single word still fits the zone width on one line
+// (no mid-word break). So short text grows and wraps to fill the box; long text
+// shrinks.
 function zoneFitForText(context, dims, txt, zone) {
     const zw = Math.max(1, dims.width * (zone.width / 100));
     const zh = Math.max(1, dims.height * (zone.height / 100));
-    const FLOOR = 0.1;
+    const FLOOR = 0.1, CEIL = 6;
     const fitsHeight = (s) => {
         const e = textVerticalExtent(context, dims, txt, s, zw);
         return !e || (e.bottom - e.top) <= zh;
     };
-    // Largest scale ≤ 1 whose re-wrapped block fits the zone height.
+    // Largest scale in [FLOOR, CEIL] whose re-wrapped block fits the zone height.
+    // A bigger font wraps into more (and taller) lines, so height-fit is monotonic
+    // in the scale and a binary search finds the tightest fit.
     let best;
-    if (fitsHeight(1)) {
-        best = 1;
+    if (fitsHeight(CEIL)) {
+        best = CEIL;
     } else {
-        let lo = FLOOR, hi = 1;
+        let lo = FLOOR, hi = CEIL;
         best = FLOOR;
-        for (let i = 0; i < 14; i++) {
+        for (let i = 0; i < 18; i++) {
             const mid = (lo + hi) / 2;
             if (fitsHeight(mid)) { best = mid; lo = mid; } else { hi = mid; }
         }
     }
-    // Shrink further until the widest word fits the zone width. Word width scales
-    // linearly with font size, so this is a direct ratio rather than a search.
+    // Never let a word overflow the zone width: cap the scale so the widest word
+    // still fits on one line. Word width scales linearly with the font, so this is a
+    // direct ratio — it both prevents mid-word breaks and bounds growth on a wide
+    // zone to where the longest word spans it.
     const mw = maxWordWidth(context, txt, 1);
     if (mw > 0) best = Math.min(best, zw / mw);
-    return Math.max(FLOOR, Math.min(1, best));
+    return Math.max(FLOOR, Math.min(CEIL, best));
 }
 
 // Font scale for the zone. By default ("uniform") the scale is the smallest that
