@@ -4248,6 +4248,8 @@ input[id$="-hex"].color-invalid { border-color: #ff453a; }
 /* Text Zone: revealed sliders + draggable rectangle overlaid on the preview */
 .text-zone-controls { margin-top: 8px; }
 .text-zone-controls .text-zone-hint { font-size: 11px; line-height: 1.4; color: #8a8a8f; margin: 0 0 8px; }
+.text-zone-controls .text-zone-uniform-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.text-zone-controls .text-zone-uniform-row .control-label { margin: 0; }
 .text-zone-controls .opacity-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .text-zone-controls .opacity-row .mini-label { font-size: 11px; color: #8a8a8f; flex-shrink: 0; width: 14px; }
 .text-zone-controls .opacity-row input[type="range"] { flex: 1 1 auto; min-width: 0; }
