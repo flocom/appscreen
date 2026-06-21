@@ -102,7 +102,18 @@ const state = {
             subheadlineUnderline: false,
             subheadlineStrikethrough: false,
             subheadlineColor: '#ffffff',
-            subheadlineOpacity: 70
+            subheadlineOpacity: 70,
+            // Optional text zone: when enabled the headline + subheadline are
+            // confined to this rectangle (percentages of the canvas) and the font is
+            // auto-reduced so the whole text fits inside, entirely and without
+            // breaking any word across lines.
+            textZone: {
+                enabled: false,
+                x: 8,
+                y: 6,
+                width: 84,
+                height: 26
+            }
         },
         elements: [],
         popouts: []
@@ -277,6 +288,13 @@ function normalizeTextSettings(text) {
     merged.currentLayoutLang = merged.currentLayoutLang || merged.currentHeadlineLang || 'en';
 
     if (typeof merged.autoFit !== 'boolean') merged.autoFit = legacyAutoFitDefault;
+
+    // Text zone: keep a complete rectangle even for projects saved before this
+    // feature shipped (or with a partial zone object).
+    merged.textZone = Object.assign(
+        { enabled: false, x: 8, y: 6, width: 84, height: 26 },
+        (merged.textZone && typeof merged.textZone === 'object') ? merged.textZone : {}
+    );
 
     merged.subheadlines = merged.subheadlines || { en: '' };
     merged.subheadlineLanguages = merged.subheadlineLanguages || ['en'];
@@ -3691,6 +3709,9 @@ function syncUIWithState() {
     // Per-language layout toggle
     document.getElementById('per-language-layout-toggle').classList.toggle('active', txt.perLanguageLayout || false);
 
+    // Text zone toggle/sliders/overlay
+    if (typeof updateTextZoneUI === 'function') updateTextZoneUI();
+
     // Headline/Subheadline toggles
     const headlineEnabled = txt.headlineEnabled !== false; // default true for backwards compatibility
     const subheadlineEnabled = txt.subheadlineEnabled || false;
@@ -5811,6 +5832,8 @@ function setupEventListeners() {
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             tab.classList.add('active');
             document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            // Show/hide the text-zone overlay with the Text tab.
+            if (typeof updateTextZoneUI === 'function') updateTextZoneUI();
             // Save active tab to localStorage
             localStorage.setItem('activeTab', tab.dataset.tab);
         });
@@ -6261,6 +6284,9 @@ function setupEventListeners() {
         document.getElementById('line-height-value').textContent = formatValue(e.target.value) + '%';
         updateCanvas();
     });
+
+    // Text zone (auto-fit rectangle) toggle, sliders and draggable overlay.
+    setupTextZoneControls();
 
     document.getElementById('subheadline-text').addEventListener('input', (e) => {
         const text = getTextSettings();
@@ -7819,6 +7845,164 @@ function loadTextUIFromGlobal() {
     updateTextUI(state.defaults.text);
 }
 
+// ===== Text zone (auto-fit rectangle) =====
+// The zone lives on the container text (like autoFit) so it applies to the whole
+// screen's text block, including every panorama panel.
+function getTextZone() {
+    try {
+        const t = (typeof getContainerText === 'function') ? getContainerText() : null;
+        return (t && t.textZone) ? t.textZone : null;
+    } catch (e) { return null; }
+}
+
+// Keep the zone rectangle inside the canvas: clamp size, then position so the box
+// always stays fully on-screen.
+function clampTextZone(z) {
+    z.width = Math.max(5, Math.min(100, z.width));
+    z.height = Math.max(5, Math.min(100, z.height));
+    z.x = Math.max(0, Math.min(100 - z.width, z.x));
+    z.y = Math.max(0, Math.min(100 - z.height, z.y));
+}
+
+function isTextTabActive() {
+    const tab = document.getElementById('tab-text');
+    return !!(tab && tab.classList.contains('active'));
+}
+
+// Sync the toggle, sliders and the on-canvas overlay with the current zone state.
+function updateTextZoneUI() {
+    const z = getTextZone();
+    const toggle = document.getElementById('text-zone-toggle');
+    const controls = document.getElementById('text-zone-controls');
+    const overlay = document.getElementById('text-zone-overlay');
+    if (!toggle || !z) return;
+    const enabled = !!z.enabled;
+    toggle.classList.toggle('active', enabled);
+    if (controls) controls.style.display = enabled ? '' : 'none';
+
+    const setSlider = (id, val) => {
+        const s = document.getElementById(id);
+        const v = document.getElementById(id + '-value');
+        if (s) s.value = Math.round(val);
+        if (v) v.textContent = Math.round(val) + '%';
+    };
+    setSlider('text-zone-x', z.x);
+    setSlider('text-zone-y', z.y);
+    setSlider('text-zone-w', z.width);
+    setSlider('text-zone-h', z.height);
+
+    if (overlay) {
+        const show = enabled && isTextTabActive() && state.screenshots.length > 0;
+        overlay.style.display = show ? '' : 'none';
+        if (show) {
+            overlay.style.left = z.x + '%';
+            overlay.style.top = z.y + '%';
+            overlay.style.width = z.width + '%';
+            overlay.style.height = z.height + '%';
+        }
+    }
+}
+
+function setupTextZoneControls() {
+    const toggle = document.getElementById('text-zone-toggle');
+    if (!toggle) return;
+
+    toggle.addEventListener('click', () => {
+        const z = getTextZone();
+        if (!z) return;
+        z.enabled = !z.enabled;
+        updateTextZoneUI();
+        updateCanvas();
+    });
+
+    const bindSlider = (id, key) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', (e) => {
+            const z = getTextZone();
+            if (!z) return;
+            z[key] = parseInt(e.target.value, 10) || 0;
+            clampTextZone(z);
+            updateTextZoneUI();
+            updateCanvas();
+        });
+    };
+    bindSlider('text-zone-x', 'x');
+    bindSlider('text-zone-y', 'y');
+    bindSlider('text-zone-w', 'width');
+    bindSlider('text-zone-h', 'height');
+
+    setupTextZoneOverlayDrag();
+}
+
+// Drag to move and corner-handles to resize the zone directly on the preview.
+function setupTextZoneOverlayDrag() {
+    const overlay = document.getElementById('text-zone-overlay');
+    const wrapper = document.getElementById('canvas-wrapper');
+    if (!overlay || !wrapper) return;
+
+    let mode = null;       // 'move' | 'nw' | 'ne' | 'sw' | 'se'
+    let startRect = null;  // wrapper bounds at drag start
+    let startPt = null;    // pointer start {x, y}
+    let startZone = null;  // zone snapshot at drag start
+
+    const onMove = (e) => {
+        const z = getTextZone();
+        if (!mode || !z || !startRect) return;
+        const dxPct = ((e.clientX - startPt.x) / startRect.width) * 100;
+        const dyPct = ((e.clientY - startPt.y) / startRect.height) * 100;
+        if (mode === 'move') {
+            z.x = startZone.x + dxPct;
+            z.y = startZone.y + dyPct;
+        } else {
+            let left = startZone.x;
+            let top = startZone.y;
+            let right = startZone.x + startZone.width;
+            let bottom = startZone.y + startZone.height;
+            if (mode.includes('w')) left = startZone.x + dxPct;
+            if (mode.includes('e')) right = startZone.x + startZone.width + dxPct;
+            if (mode.includes('n')) top = startZone.y + dyPct;
+            if (mode.includes('s')) bottom = startZone.y + startZone.height + dyPct;
+            const MIN = 5;
+            if (right - left < MIN) { if (mode.includes('w')) left = right - MIN; else right = left + MIN; }
+            if (bottom - top < MIN) { if (mode.includes('n')) top = bottom - MIN; else bottom = top + MIN; }
+            z.x = left; z.y = top; z.width = right - left; z.height = bottom - top;
+        }
+        clampTextZone(z);
+        updateTextZoneUI();
+        updateCanvas();
+        e.preventDefault();
+    };
+
+    const onUp = () => {
+        if (!mode) return;
+        mode = null;
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+    };
+
+    const start = (e, m) => {
+        const z = getTextZone();
+        if (!z || !z.enabled) return;
+        mode = m;
+        startRect = wrapper.getBoundingClientRect();
+        startPt = { x: e.clientX, y: e.clientY };
+        startZone = { x: z.x, y: z.y, width: z.width, height: z.height };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
+    overlay.addEventListener('pointerdown', (e) => {
+        if (e.target.classList.contains('tz-handle')) return; // handled below
+        start(e, 'move');
+    });
+    overlay.querySelectorAll('.tz-handle').forEach((h) => {
+        h.addEventListener('pointerdown', (e) => start(e, h.dataset.handle));
+    });
+}
+
 // Update all text UI elements
 function updateTextUI(text) {
     const headlineLang = text.currentHeadlineLang || 'en';
@@ -7862,6 +8046,9 @@ function updateTextUI(text) {
         const key = 'subheadline' + style.charAt(0).toUpperCase() + style.slice(1);
         btn.classList.toggle('active', text[key] || false);
     });
+
+    // Text zone toggle/sliders/overlay
+    if (typeof updateTextZoneUI === 'function') updateTextZoneUI();
 }
 
 function applyPositionPreset(preset) {
@@ -9411,6 +9598,7 @@ function makePanelTxt(txt, p) {
         const panel = txt.panelTexts[p];
         syncPanelLanguage(panel, txt);
         panel.autoFit = txt.autoFit;
+        panel.textZone = txt.textZone;
         return panel;
     }
     const lang = txt.currentHeadlineLang || 'en';
@@ -9445,7 +9633,7 @@ function drawTextWithPanorama(context, dims, txt) {
 // Measures the vertical extent of the text block. `fontScale` shrinks the FONT
 // size only (used by auto-fit) — the wrap width stays full, so reducing it makes
 // the text reflow over the same width and just get shorter, never narrower.
-function textVerticalExtent(context, dims, txt, fontScale) {
+function textVerticalExtent(context, dims, txt, fontScale, wrapWidth) {
     fontScale = fontScale || 1;
     const headlineEnabled = txt.headlineEnabled !== false;
     const subheadlineEnabled = txt.subheadlineEnabled || false;
@@ -9460,12 +9648,13 @@ function textVerticalExtent(context, dims, txt, fontScale) {
     const hSize = headlineLayout.headlineSize * fontScale;
     const sSize = subheadlineLayout.subheadlineSize * fontScale;
     const padding = dims.width * 0.08;
+    const ww = (typeof wrapWidth === 'number' && wrapWidth > 0) ? wrapWidth : (dims.width - padding * 2);
     const isTop = layoutSettings.position === 'top';
     const textY = isTop ? dims.height * (layoutSettings.offsetY / 100) : dims.height * (1 - layoutSettings.offsetY / 100);
     let top = Infinity, bottom = -Infinity, currentY = textY;
     if (headline) {
         context.font = `${txt.headlineItalic ? 'italic' : 'normal'} ${txt.headlineWeight} ${hSize}px ${txt.headlineFont}`;
-        const lines = wrapText(context, headline, dims.width - padding * 2);
+        const lines = wrapText(context, headline, ww);
         const lineHeight = hSize * (layoutSettings.lineHeight / 100);
         if (!isTop) currentY -= (lines.length - 1) * lineHeight;
         lines.forEach((_, i) => {
@@ -9479,7 +9668,7 @@ function textVerticalExtent(context, dims, txt, fontScale) {
     }
     if (subheadline) {
         context.font = `${txt.subheadlineItalic ? 'italic' : 'normal'} ${txt.subheadlineWeight || '400'} ${sSize}px ${txt.subheadlineFont || txt.headlineFont}`;
-        const lines = wrapText(context, subheadline, dims.width - padding * 2);
+        const lines = wrapText(context, subheadline, ww);
         const subLineHeight = sSize * 1.4;
         lines.forEach((_, i) => {
             const y = currentY + i * subLineHeight;
@@ -9532,6 +9721,66 @@ function computeTextFit(context, dims, txt) {
     return { scale: best, fontScale: best, overlaps: true };
 }
 
+// Largest pixel width of any single whitespace-delimited word across the headline
+// and subheadline, measured at `fontScale`. Used by the text zone to keep words
+// from being broken mid-word: the zone shrinks until the widest word fits its width.
+function maxWordWidth(context, txt, fontScale) {
+    fontScale = fontScale || 1;
+    const headlineEnabled = txt.headlineEnabled !== false;
+    const subheadlineEnabled = txt.subheadlineEnabled || false;
+    const headlineLang = txt.currentHeadlineLang || 'en';
+    const subheadlineLang = txt.currentSubheadlineLang || 'en';
+    const headlineLayout = getEffectiveLayout(txt, headlineLang);
+    const subheadlineLayout = getEffectiveLayout(txt, subheadlineLang);
+    const headline = headlineEnabled && txt.headlines ? (txt.headlines[headlineLang] || '') : '';
+    const subheadline = subheadlineEnabled && txt.subheadlines ? (txt.subheadlines[subheadlineLang] || '') : '';
+    let maxW = 0;
+    const measureWords = (str) => {
+        String(str).split(/\s+/).forEach((w) => {
+            if (w) maxW = Math.max(maxW, context.measureText(w).width);
+        });
+    };
+    if (headline) {
+        context.font = `${txt.headlineItalic ? 'italic' : 'normal'} ${txt.headlineWeight} ${headlineLayout.headlineSize * fontScale}px ${txt.headlineFont}`;
+        measureWords(headline);
+    }
+    if (subheadline) {
+        context.font = `${txt.subheadlineItalic ? 'italic' : 'normal'} ${txt.subheadlineWeight || '400'} ${subheadlineLayout.subheadlineSize * fontScale}px ${txt.subheadlineFont || txt.headlineFont}`;
+        measureWords(subheadline);
+    }
+    return maxW;
+}
+
+// Font scale (≤ 1) that makes the whole text block fit inside the zone rectangle:
+// it reflows at the zone width, fits within the zone height, and shrinks further if
+// needed so the widest single word still fits on one line (no mid-word break).
+function computeZoneFit(context, dims, txt, zone) {
+    const zw = Math.max(1, dims.width * (zone.width / 100));
+    const zh = Math.max(1, dims.height * (zone.height / 100));
+    const FLOOR = 0.1;
+    const fitsHeight = (s) => {
+        const e = textVerticalExtent(context, dims, txt, s, zw);
+        return !e || (e.bottom - e.top) <= zh;
+    };
+    // Largest scale ≤ 1 whose re-wrapped block fits the zone height.
+    let best;
+    if (fitsHeight(1)) {
+        best = 1;
+    } else {
+        let lo = FLOOR, hi = 1;
+        best = FLOOR;
+        for (let i = 0; i < 14; i++) {
+            const mid = (lo + hi) / 2;
+            if (fitsHeight(mid)) { best = mid; lo = mid; } else { hi = mid; }
+        }
+    }
+    // Shrink further until the widest word fits the zone width. Word width scales
+    // linearly with font size, so this is a direct ratio rather than a search.
+    const mw = maxWordWidth(context, txt, 1);
+    if (mw > 0) best = Math.min(best, zw / mw);
+    return Math.max(FLOOR, Math.min(1, best));
+}
+
 function drawTextToContext(context, dims, txt) {
     // Check enabled states (default headline to true for backwards compatibility)
     const headlineEnabled = txt.headlineEnabled !== false;
@@ -9549,11 +9798,19 @@ function drawTextToContext(context, dims, txt) {
 
     if (!headline && !subheadline) return;
 
+    // Optional text zone: confine the headline + subheadline to a user-defined
+    // rectangle and shrink the font so the whole block fits inside it, never
+    // breaking a word across lines. When active it overrides the normal
+    // position/offset placement and the overlap auto-fit.
+    const zone = (txt.textZone && txt.textZone.enabled) ? txt.textZone : null;
+
     // Auto-fit: reduce the FONT SIZE (not the width) so the text reflows over the
     // same full width and only gets shorter, keeping it clear of the device and
     // inside the canvas so it is never clipped.
     let fontScale = 1;
-    if (txt && txt.autoFit) {
+    if (zone) {
+        fontScale = computeZoneFit(context, dims, txt, zone);
+    } else if (txt && txt.autoFit) {
         const fit = computeTextFit(context, dims, txt);
         if (fit.overlaps && fit.fontScale < 0.999) fontScale = fit.fontScale;
     }
@@ -9561,12 +9818,28 @@ function drawTextToContext(context, dims, txt) {
     const sSize = subheadlineLayout.subheadlineSize * fontScale;
 
     const padding = dims.width * 0.08;
-    const textY = layoutSettings.position === 'top'
-        ? dims.height * (layoutSettings.offsetY / 100)
-        : dims.height * (1 - layoutSettings.offsetY / 100);
+    // Wrap width and horizontal centre: the zone constrains both so the text
+    // reflows inside the zone and is centred within it.
+    const wrapWidth = zone ? Math.max(1, dims.width * (zone.width / 100)) : (dims.width - padding * 2);
+    const centerX = zone ? (dims.width * (zone.x / 100) + wrapWidth / 2) : (dims.width / 2);
+    // Vertical anchor: the zone centres the block inside the rectangle and always
+    // grows top→down; otherwise keep the existing top/bottom anchored behaviour.
+    const effPosition = zone ? 'top' : layoutSettings.position;
+    let textY;
+    if (zone) {
+        const ext = textVerticalExtent(context, dims, txt, fontScale, wrapWidth);
+        const blockH = ext ? (ext.bottom - ext.top) : 0;
+        const zoneTop = dims.height * (zone.y / 100);
+        const zoneH = dims.height * (zone.height / 100);
+        textY = zoneTop + Math.max(0, (zoneH - blockH) / 2);
+    } else {
+        textY = effPosition === 'top'
+            ? dims.height * (layoutSettings.offsetY / 100)
+            : dims.height * (1 - layoutSettings.offsetY / 100);
+    }
 
     context.textAlign = 'center';
-    context.textBaseline = layoutSettings.position === 'top' ? 'top' : 'bottom';
+    context.textBaseline = effPosition === 'top' ? 'top' : 'bottom';
 
     let currentY = textY;
 
@@ -9576,33 +9849,33 @@ function drawTextToContext(context, dims, txt) {
         context.font = `${fontStyle} ${txt.headlineWeight} ${hSize}px ${txt.headlineFont}`;
         context.fillStyle = txt.headlineColor;
 
-        const lines = wrapText(context, headline, dims.width - padding * 2);
+        const lines = wrapText(context, headline, wrapWidth);
         const lineHeight = hSize * (layoutSettings.lineHeight / 100);
 
         // For bottom positioning, offset currentY so lines draw correctly
-        if (layoutSettings.position === 'bottom') {
+        if (effPosition === 'bottom') {
             currentY -= (lines.length - 1) * lineHeight;
         }
 
         let lastLineY;
-        const hlBaselineTop = layoutSettings.position === 'top';
+        const hlBaselineTop = effPosition === 'top';
         lines.forEach((line, i) => {
             const y = currentY + i * lineHeight;
             lastLineY = y;
             if (txt.headlineBgOpacity > 0) {
-                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, hSize, hlBaselineTop, txt.headlineBgColor || '#000000', txt.headlineBgOpacity / 100);
+                drawTextHighlight(context, centerX, y, context.measureText(line).width, hSize, hlBaselineTop, txt.headlineBgColor || '#000000', txt.headlineBgOpacity / 100);
             }
-            context.fillText(line, dims.width / 2, y);
+            context.fillText(line, centerX, y);
 
             // Calculate text metrics for decorations
             const textWidth = context.measureText(line).width;
             const fontSize = hSize;
             const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
+            const x = centerX - textWidth / 2;
 
             // Draw underline
             if (txt.headlineUnderline) {
-                const underlineY = layoutSettings.position === 'top'
+                const underlineY = effPosition === 'top'
                     ? y + fontSize * 0.9
                     : y + fontSize * 0.1;
                 context.fillRect(x, underlineY, textWidth, lineThickness);
@@ -9610,7 +9883,7 @@ function drawTextToContext(context, dims, txt) {
 
             // Draw strikethrough
             if (txt.headlineStrikethrough) {
-                const strikeY = layoutSettings.position === 'top'
+                const strikeY = effPosition === 'top'
                     ? y + fontSize * 0.4
                     : y - fontSize * 0.4;
                 context.fillRect(x, strikeY, textWidth, lineThickness);
@@ -9621,7 +9894,7 @@ function drawTextToContext(context, dims, txt) {
         // The gap between headline and subheadline should be (lineHeight - fontSize)
         // This is the "extra" spacing beyond the text itself
         const gap = lineHeight - hSize;
-        if (layoutSettings.position === 'top') {
+        if (effPosition === 'top') {
             // For top: lastLineY is top of last line, add fontSize to get bottom, then add gap
             currentY = lastLineY + hSize + gap;
         } else {
@@ -9638,29 +9911,29 @@ function drawTextToContext(context, dims, txt) {
         context.font = `${subFontStyle} ${subWeight} ${sSize}px ${txt.subheadlineFont || txt.headlineFont}`;
         context.fillStyle = hexToRgba(txt.subheadlineColor, txt.subheadlineOpacity / 100);
 
-        const lines = wrapText(context, subheadline, dims.width - padding * 2);
+        const lines = wrapText(context, subheadline, wrapWidth);
         const subLineHeight = sSize * 1.4;
 
         // Subheadline starts after headline with gap determined by headline lineHeight
         // For bottom position, switch to 'top' baseline so subheadline draws downward
         const subY = currentY;
-        if (layoutSettings.position === 'bottom') {
+        if (effPosition === 'bottom') {
             context.textBaseline = 'top';
         }
 
         lines.forEach((line, i) => {
             const y = subY + i * subLineHeight;
             if (txt.subheadlineBgOpacity > 0) {
-                drawTextHighlight(context, dims.width / 2, y, context.measureText(line).width, sSize, true, txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity / 100);
+                drawTextHighlight(context, centerX, y, context.measureText(line).width, sSize, true, txt.subheadlineBgColor || '#000000', txt.subheadlineBgOpacity / 100);
                 context.fillStyle = hexToRgba(txt.subheadlineColor, txt.subheadlineOpacity / 100);
             }
-            context.fillText(line, dims.width / 2, y);
+            context.fillText(line, centerX, y);
 
             // Calculate text metrics for decorations
             const textWidth = context.measureText(line).width;
             const fontSize = sSize;
             const lineThickness = Math.max(2, fontSize * 0.05);
-            const x = dims.width / 2 - textWidth / 2;
+            const x = centerX - textWidth / 2;
 
             // Draw underline (using 'top' baseline for subheadline)
             if (txt.subheadlineUnderline) {
@@ -9676,7 +9949,7 @@ function drawTextToContext(context, dims, txt) {
         });
 
         // Restore baseline if we changed it
-        if (layoutSettings.position === 'bottom') {
+        if (effPosition === 'bottom') {
             context.textBaseline = 'bottom';
         }
     }

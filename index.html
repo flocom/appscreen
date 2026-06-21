@@ -346,6 +346,12 @@
                 </div>
                 <div class="canvas-wrapper" id="canvas-wrapper">
                     <canvas id="preview-canvas"></canvas>
+                    <div id="text-zone-overlay" class="text-zone-overlay" style="display:none;">
+                        <div class="tz-handle tz-nw" data-handle="nw"></div>
+                        <div class="tz-handle tz-ne" data-handle="ne"></div>
+                        <div class="tz-handle tz-sw" data-handle="sw"></div>
+                        <div class="tz-handle tz-se" data-handle="se"></div>
+                    </div>
                     <div id="threejs-container" style="display: none;"></div>
                     <div class="no-screenshot" id="no-screenshot">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
@@ -912,6 +918,36 @@
 
             <!-- Text Tab -->
             <div class="tab-content" id="tab-text">
+                <div class="control-group" id="text-zone-group">
+                    <div class="control-label-row">
+                        <label class="control-label">Text zone (auto-fit)</label>
+                        <div class="toggle" id="text-zone-toggle" title="Confine the text to a zone and shrink it to fit entirely"></div>
+                    </div>
+                    <div class="text-zone-controls" id="text-zone-controls" style="display:none;">
+                        <p class="text-zone-hint">Drag or resize the dashed box on the preview. The headline &amp; subheadline shrink to fit inside it — entirely and without breaking any word.</p>
+                        <div class="control-row opacity-row">
+                            <span class="mini-label">X</span>
+                            <input type="range" id="text-zone-x" min="0" max="100" value="8">
+                            <span class="range-value" id="text-zone-x-value">8%</span>
+                        </div>
+                        <div class="control-row opacity-row">
+                            <span class="mini-label">Y</span>
+                            <input type="range" id="text-zone-y" min="0" max="100" value="6">
+                            <span class="range-value" id="text-zone-y-value">6%</span>
+                        </div>
+                        <div class="control-row opacity-row">
+                            <span class="mini-label">W</span>
+                            <input type="range" id="text-zone-w" min="5" max="100" value="84">
+                            <span class="range-value" id="text-zone-w-value">84%</span>
+                        </div>
+                        <div class="control-row opacity-row">
+                            <span class="mini-label">H</span>
+                            <input type="range" id="text-zone-h" min="5" max="100" value="26">
+                            <span class="range-value" id="text-zone-h-value">26%</span>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="control-group">
                     <div class="toggle-row collapsible" data-target="headline-options">
                         <span class="toggle-label">
