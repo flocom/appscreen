@@ -9599,53 +9599,57 @@ function drawDeviceBezel(context, x, y, width, height, radius, model) {
     context.restore();
 }
 
-// Shared: draw a Mac (iMac-style) shell — a thin black bezel around the screen,
-// a brushed-aluminium chin, and a tapered neck + foot stand. Aluminium surfaces
-// use vertical gradients for a metallic sheen. Geometry scales off the screen so
-// it stays proportional on the landscape Mac aspect ratio.
+// Shared: draw a Mac (MacBook Pro-style) shell — a thin black bezel around the
+// screen (the lid), a dark hinge, and an aluminium base shown in slight
+// perspective (wider at the front) with a centred finger-groove for opening the
+// lid. Aluminium surfaces use vertical gradients for a metallic sheen. Geometry
+// scales off the screen so it stays proportional on the landscape Mac ratio.
 function drawMacBezel(context, x, y, width, height, radius) {
-    const bw = Math.min(width, height) * 0.016;        // thin uniform black bezel
-    const chin = height * 0.10;                        // aluminium chin below the screen
+    const bw = Math.min(width, height) * 0.014;        // thin uniform black bezel
     const cx = x + width / 2;
-    const bodyX = x - bw, bodyW = width + bw * 2;
     const screenBottom = y + height;
     context.save();
 
-    // ---- Stand: tapered neck + foot (drawn first, behind the body) ----
-    const chinBottom = screenBottom + chin;
-    const neckTopW = width * 0.20, neckBotW = width * 0.30, neckH = height * 0.06;
-    const footW = width * 0.36, footH = height * 0.024;
-    const neckGrad = context.createLinearGradient(0, chinBottom, 0, chinBottom + neckH);
-    neckGrad.addColorStop(0, '#c4c8ce');
-    neckGrad.addColorStop(1, '#9b9fa6');
-    context.fillStyle = neckGrad;
+    // ---- Dark hinge strip between the lid and the base ----
+    const hingeH = height * 0.014;
+    const hingeTop = screenBottom + bw * 0.5;
+    context.fillStyle = '#26282c';
     context.beginPath();
-    context.moveTo(cx - neckTopW / 2, chinBottom);
-    context.lineTo(cx + neckTopW / 2, chinBottom);
-    context.lineTo(cx + neckBotW / 2, chinBottom + neckH);
-    context.lineTo(cx - neckBotW / 2, chinBottom + neckH);
-    context.closePath();
-    context.fill();
-    const footGrad = context.createLinearGradient(0, chinBottom + neckH - footH, 0, chinBottom + neckH + footH);
-    footGrad.addColorStop(0, '#d6dade');
-    footGrad.addColorStop(1, '#a3a7ae');
-    context.fillStyle = footGrad;
-    context.beginPath();
-    context.roundRect(cx - footW / 2, chinBottom + neckH - footH * 0.2, footW, footH, footH * 0.5);
+    context.roundRect(x - bw * 0.5, hingeTop, width + bw, hingeH, hingeH * 0.4);
     context.fill();
 
-    // ---- Aluminium chin (body front below the screen) ----
-    const chinGrad = context.createLinearGradient(0, screenBottom, 0, chinBottom);
-    chinGrad.addColorStop(0,    '#e7e9ed');
-    chinGrad.addColorStop(0.45, '#c9cdd3');
-    chinGrad.addColorStop(1,    '#aeb2b9');
-    context.fillStyle = chinGrad;
+    // ---- Aluminium base (keyboard deck) in slight perspective ----
+    const baseTop = hingeTop + hingeH;
+    const baseH = height * 0.05;
+    const topW = width + bw * 2, botW = width * 1.10;   // wider at the front
+    const tl = cx - topW / 2, tr = cx + topW / 2;
+    const bl = cx - botW / 2, br = cx + botW / 2;
+    const fr = baseH * 0.55;                            // rounded front corners
+    const baseGrad = context.createLinearGradient(0, baseTop, 0, baseTop + baseH);
+    baseGrad.addColorStop(0,    '#d9dce1');
+    baseGrad.addColorStop(0.45, '#c2c6cc');
+    baseGrad.addColorStop(1,    '#a4a8af');
+    context.fillStyle = baseGrad;
     context.beginPath();
-    context.roundRect(bodyX, screenBottom, bodyW, chin, [0, 0, bw * 2.2, bw * 2.2]);
+    context.moveTo(tl, baseTop);
+    context.lineTo(tr, baseTop);
+    context.lineTo(br, baseTop + baseH - fr);
+    context.quadraticCurveTo(br, baseTop + baseH, br - fr, baseTop + baseH);
+    context.lineTo(bl + fr, baseTop + baseH);
+    context.quadraticCurveTo(bl, baseTop + baseH, bl, baseTop + baseH - fr);
+    context.closePath();
     context.fill();
-    // bright sheen line along the top of the chin
-    context.fillStyle = 'rgba(255,255,255,0.5)';
-    context.fillRect(bodyX + bw, screenBottom + bw * 0.4, bodyW - bw * 2, Math.max(1, bw * 0.16));
+    // bright sheen line along the top of the base
+    context.fillStyle = 'rgba(255,255,255,0.45)';
+    context.fillRect(tl + bw, baseTop + Math.max(1, baseH * 0.05), topW - bw * 2, Math.max(1, bw * 0.16));
+    // centred finger-groove (shallow dip on the front edge)
+    const grW = width * 0.13, grH = baseH * 0.5;
+    context.fillStyle = 'rgba(0,0,0,0.16)';
+    context.beginPath();
+    context.moveTo(cx - grW / 2, baseTop);
+    context.quadraticCurveTo(cx, baseTop + grH, cx + grW / 2, baseTop);
+    context.closePath();
+    context.fill();
 
     // ---- Black bezel ring around the screen ----
     context.lineWidth = bw;
