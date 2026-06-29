@@ -683,7 +683,7 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
         "Objects merge (only the fields you pass change); arrays and scalars replace. Use `all:true` to " +
         "patch every screenshot. Sections & example fields:\n" +
         "- screenshot (device placement): scale, x, y, rotation, perspective, cornerRadius, deviceModel2D " +
-        "('iphone'|'samsung'), bezelEnabled, spanScreens, use3D, device3D, rotation3D{x,y,z}, " +
+        "('iphone'|'ipad'|'samsung'|'mac'), deviceMacFinish ('silver'|'space-black'), bezelEnabled, spanScreens, use3D, device3D, rotation3D{x,y,z}, " +
         "shadow{enabled,color,blur,opacity,x,y}, frame{enabled,color,width,opacity,notch}\n" +
         "- text (styling/layout): headlineEnabled, headlineFont, headlineSize, headlineWeight, headlineColor, " +
         "headlineItalic/Underline/Strikethrough, headlineBgColor, headlineBgOpacity, position ('top'|'bottom'), " +
