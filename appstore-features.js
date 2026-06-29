@@ -630,6 +630,18 @@ function initDeviceTextExtras() {
                 state.outputDevice = defaultSize;
                 if (typeof syncUIWithState === 'function') syncUIWithState();
             }
+            // The Mac finish selector is only relevant for the Mac model.
+            const finishRow = document.getElementById('mac-finish-row');
+            if (finishRow) finishRow.style.display = model === 'mac' ? 'block' : 'none';
+            updateCanvas();
+        });
+    });
+
+    // Mac finish (Silver / Space Black) — only shown for the Mac device model.
+    document.querySelectorAll('#mac-finish-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#mac-finish-selector button').forEach(b => b.classList.toggle('active', b === btn));
+            setScreenshotSetting('deviceMacFinish', btn.dataset.macfinish);
             updateCanvas();
         });
     });
@@ -716,6 +728,10 @@ function syncDeviceTextExtras() {
         document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === notch));
         const model2d = ss.deviceModel2D || 'iphone';
         document.querySelectorAll('#device-model-2d-selector button').forEach(b => b.classList.toggle('active', b.dataset.model2d === model2d));
+        const macFinish = ss.deviceMacFinish || 'silver';
+        document.querySelectorAll('#mac-finish-selector button').forEach(b => b.classList.toggle('active', b.dataset.macfinish === macFinish));
+        const finishRow = document.getElementById('mac-finish-row');
+        if (finishRow) finishRow.style.display = (model2d === 'mac' && !ss.use3D) ? 'block' : 'none';
         const bezelToggle = document.getElementById('bezel-toggle');
         if (bezelToggle) bezelToggle.classList.toggle('active', !!ss.bezelEnabled);
         const span = ss.spanScreens || 1;

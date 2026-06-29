@@ -36,6 +36,7 @@ const state = {
             perspective: 0,
             cornerRadius: 24,
             deviceModel2D: 'iphone', // 2D device model: 'iphone' | 'ipad' | 'samsung' | 'mac'
+            deviceMacFinish: 'silver', // Mac chassis finish: 'silver' | 'space-black'
             bezelEnabled: false,      // draw a device bezel/shell in 2D
             spanScreens: 1,           // panorama: span this screenshot across N output slots
             use3D: false,
@@ -9525,7 +9526,7 @@ function drawScreenshotToContext(context, dims, img, settings) {
         if (settings.rotation !== 0) context.rotate(settings.rotation * Math.PI / 180);
         if (settings.perspective !== 0) context.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
         context.translate(-centerX, -centerY);
-        if (settings.bezelEnabled) drawDeviceBezel(context, x, y, imgWidth, imgHeight, radius, settings.deviceModel2D || 'iphone');
+        if (settings.bezelEnabled) drawDeviceBezel(context, x, y, imgWidth, imgHeight, radius, settings.deviceModel2D || 'iphone', settings.deviceMacFinish || 'silver');
         if (hasNotch) drawNotchShape(context, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
         context.restore();
     }
@@ -9576,11 +9577,11 @@ function drawNotchShape(context, x, y, width, height, radius, style) {
 }
 
 // Shared: draw a 2D device bezel/shell (iPhone, iPad, Samsung or Mac) around the screen.
-function drawDeviceBezel(context, x, y, width, height, radius, model) {
+function drawDeviceBezel(context, x, y, width, height, radius, model, macFinish) {
     const isSamsung = model === 'samsung';
     const isIpad = model === 'ipad';
     const isMac = model === 'mac';
-    if (isMac) { drawMacBezel(context, x, y, width, height, radius); return; }
+    if (isMac) { drawMacBezel(context, x, y, width, height, radius, macFinish); return; }
     // iPad bezels are uniform and a touch thinner than iPhone; Samsung thinnest.
     const bw = width * (isSamsung ? 0.020 : isIpad ? 0.024 : 0.028);
     context.save();
@@ -9604,8 +9605,27 @@ function drawDeviceBezel(context, x, y, width, height, radius, model) {
 // even-odd cutout, never grey metal) and a small camera dot, then a slim
 // aluminium base in slight perspective: a lit "open-lid" deck sliver, a two-tone
 // front lip with a finger-groove, and a soft contact shadow grounding it all.
+// `finish` selects the chassis colour: 'silver' (default) or 'space-black'.
 // All geometry scales off the screen so it stays proportional at any resolution.
-function drawMacBezel(context, x, y, width, height, radius) {
+function drawMacBezel(context, x, y, width, height, radius, finish) {
+    // Per-finish aluminium palettes (the dark bezel itself stays black on both).
+    const FIN = finish === 'space-black' ? {
+        rim: ['#6f7278', '#44474c', '#26282b'],          // lid rim: top hi -> mid -> bottom
+        deck: ['#4c4f54', '#3c3f43', '#2d2f33'],         // open-lid deck sliver
+        lip: ['#565a60', '#474a4f', '#3a3d42', '#2f3236', '#26282c', '#34373b'], // front lip
+        lipSideRGB: '0,0,0', lipSideA: 0.45,             // corner falloff
+        grooveRGB: '0,0,0', grooveA: 0.55,               // finger-groove recess
+        grooveLight: 'rgba(205,209,215,0.32)',
+        edgeHi: 'rgba(255,255,255,0.3)',                 // crisp catch-lights
+    } : {
+        rim: ['#dfe2e6', '#aeb2b8', '#888c92'],
+        deck: ['#f1f2f4', '#dcdfe2', '#c3c6cb'],
+        lip: ['#f4f5f7', '#e0e3e6', '#c2c6cb', '#aaaeb4', '#9b9fa5', '#b0b4ba'],
+        lipSideRGB: '80,84,90', lipSideA: 0.32,
+        grooveRGB: '60,64,70', grooveA: 0.5,
+        grooveLight: 'rgba(245,247,250,0.55)',
+        edgeHi: 'rgba(255,255,255,0.7)',
+    };
     context.save();
 
     // ---- Proportions (all derived from screen width/height) ----
@@ -9665,9 +9685,9 @@ function drawMacBezel(context, x, y, width, height, radius) {
     // Thin aluminium rim around the whole lid (drawn as ring via even-odd)
     const rim = bezel * 0.32;
     const rimGrad = context.createLinearGradient(0, lidTop - rim, 0, lidTop + lidH + rim);
-    rimGrad.addColorStop(0, '#dfe2e6');
-    rimGrad.addColorStop(0.5, '#aeb2b8');
-    rimGrad.addColorStop(1, '#888c92');
+    rimGrad.addColorStop(0, FIN.rim[0]);
+    rimGrad.addColorStop(0.5, FIN.rim[1]);
+    rimGrad.addColorStop(1, FIN.rim[2]);
     context.fillStyle = rimGrad;
     context.beginPath();
     rrPath(lidLeft - rim, lidTop - rim, lidW + rim * 2, lidH + rim * 2, lidRadius + rim);
@@ -9732,9 +9752,9 @@ function drawMacBezel(context, x, y, width, height, radius) {
     // the bright top-surface band itself (flat-ish, lit from above)
     const bandTopY = deckTopY + seamH;
     const deckGrad = context.createLinearGradient(0, bandTopY, 0, lipTopY);
-    deckGrad.addColorStop(0, '#f1f2f4');     // bright leading edge of the deck
-    deckGrad.addColorStop(0.55, '#dcdfe2');
-    deckGrad.addColorStop(1, '#c3c6cb');     // toward the front lip
+    deckGrad.addColorStop(0, FIN.deck[0]);   // bright leading edge of the deck
+    deckGrad.addColorStop(0.55, FIN.deck[1]);
+    deckGrad.addColorStop(1, FIN.deck[2]);   // toward the front lip
     context.fillStyle = deckGrad;
     context.beginPath();
     context.moveTo(lidLeft + lidRadius * 0.35 - width * 0.01, bandTopY);
@@ -9745,7 +9765,7 @@ function drawMacBezel(context, x, y, width, height, radius) {
     context.fill();
 
     // crisp bright catch-light along the deck's leading (top) edge
-    context.strokeStyle = 'rgba(255,255,255,0.7)';
+    context.strokeStyle = FIN.edgeHi;
     context.lineWidth = Math.max(1, height * 0.0022);
     context.beginPath();
     context.moveTo(lidLeft + lidRadius * 0.35 - width * 0.01 + 2, bandTopY + context.lineWidth);
@@ -9758,12 +9778,12 @@ function drawMacBezel(context, x, y, width, height, radius) {
     //    a darker mid front face, then a soft brighter bounce near the floor.
     // ============================================================
     const lipGrad = context.createLinearGradient(0, lipTopY, 0, baseBottomY);
-    lipGrad.addColorStop(0, '#f4f5f7');     // crisp top edge highlight
-    lipGrad.addColorStop(0.10, '#e0e3e6');
-    lipGrad.addColorStop(0.34, '#c2c6cb');
-    lipGrad.addColorStop(0.62, '#aaaeb4');  // front face (darker tone)
-    lipGrad.addColorStop(0.86, '#9b9fa5');
-    lipGrad.addColorStop(1, '#b0b4ba');     // soft bounce light at the rounded bottom
+    lipGrad.addColorStop(0, FIN.lip[0]);    // crisp top edge highlight
+    lipGrad.addColorStop(0.10, FIN.lip[1]);
+    lipGrad.addColorStop(0.34, FIN.lip[2]);
+    lipGrad.addColorStop(0.62, FIN.lip[3]); // front face (darker tone)
+    lipGrad.addColorStop(0.86, FIN.lip[4]);
+    lipGrad.addColorStop(1, FIN.lip[5]);    // soft bounce light at the rounded bottom
     context.fillStyle = lipGrad;
     context.beginPath();
     rrPath(baseLeft, lipTopY, baseW, lipH, lipRadius);
@@ -9771,17 +9791,17 @@ function drawMacBezel(context, x, y, width, height, radius) {
 
     // vertical falloff darkening toward the corners (cylindrical look)
     const lipSide = context.createLinearGradient(baseLeft, 0, baseRight, 0);
-    lipSide.addColorStop(0, 'rgba(80,84,90,0.32)');
-    lipSide.addColorStop(0.12, 'rgba(80,84,90,0)');
-    lipSide.addColorStop(0.88, 'rgba(80,84,90,0)');
-    lipSide.addColorStop(1, 'rgba(80,84,90,0.32)');
+    lipSide.addColorStop(0, `rgba(${FIN.lipSideRGB},${FIN.lipSideA})`);
+    lipSide.addColorStop(0.12, `rgba(${FIN.lipSideRGB},0)`);
+    lipSide.addColorStop(0.88, `rgba(${FIN.lipSideRGB},0)`);
+    lipSide.addColorStop(1, `rgba(${FIN.lipSideRGB},${FIN.lipSideA})`);
     context.fillStyle = lipSide;
     context.beginPath();
     rrPath(baseLeft, lipTopY, baseW, lipH, lipRadius);
     context.fill();
 
     // bright top highlight edge of the lip
-    context.strokeStyle = 'rgba(255,255,255,0.7)';
+    context.strokeStyle = FIN.edgeHi;
     context.lineWidth = Math.max(1, height * 0.0028);
     context.beginPath();
     context.moveTo(baseLeft + lipRadius, lipTopY + context.lineWidth * 0.7);
@@ -9796,15 +9816,15 @@ function drawMacBezel(context, x, y, width, height, radius) {
     const grooveH = grooveBot - grooveTop;
     // shadow of the scoop
     const gShadow = context.createLinearGradient(0, grooveTop, 0, grooveBot);
-    gShadow.addColorStop(0, 'rgba(60,64,70,0.0)');
-    gShadow.addColorStop(0.35, 'rgba(60,64,70,0.5)');
-    gShadow.addColorStop(1, 'rgba(60,64,70,0.0)');
+    gShadow.addColorStop(0, `rgba(${FIN.grooveRGB},0)`);
+    gShadow.addColorStop(0.35, `rgba(${FIN.grooveRGB},${FIN.grooveA})`);
+    gShadow.addColorStop(1, `rgba(${FIN.grooveRGB},0)`);
     context.fillStyle = gShadow;
     context.beginPath();
     rrPath(cx - grooveW / 2, grooveTop, grooveW, grooveH, grooveH * 0.5);
     context.fill();
     // thin bright catch-light along the bottom of the scoop
-    context.strokeStyle = 'rgba(245,247,250,0.55)';
+    context.strokeStyle = FIN.grooveLight;
     context.lineWidth = Math.max(1, lipH * 0.05);
     context.beginPath();
     context.moveTo(cx - grooveW * 0.42, grooveBot - context.lineWidth);
@@ -10680,7 +10700,7 @@ function drawScreenshot() {
         if (settings.rotation !== 0) ctx.rotate(settings.rotation * Math.PI / 180);
         if (settings.perspective !== 0) ctx.transform(1, settings.perspective * 0.01, 0, 1, 0, 0);
         ctx.translate(-centerX, -centerY);
-        if (settings.bezelEnabled) drawDeviceBezel(ctx, x, y, imgWidth, imgHeight, radius, settings.deviceModel2D || 'iphone');
+        if (settings.bezelEnabled) drawDeviceBezel(ctx, x, y, imgWidth, imgHeight, radius, settings.deviceModel2D || 'iphone', settings.deviceMacFinish || 'silver');
         if (hasNotch2) drawNotchShape(ctx, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
         ctx.restore();
     }
