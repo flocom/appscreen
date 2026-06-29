@@ -602,7 +602,7 @@ function initCanvasViewToggle() {
 // Per-model corner-radius defaults (slider value; render scales it).
 // iPad corners are far subtler than a phone's (~2-3% of width), so a low value
 // here is what makes the mockup actually read as an iPad rather than a big phone.
-const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34, ipad: 12 };
+const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34, ipad: 12, mac: 16 };
 
 function initDeviceTextExtras() {
     // 2D Device Model (iPhone / Samsung) — auto-adapts corner radius + notch.
@@ -618,14 +618,14 @@ function initDeviceTextExtras() {
             const val = document.getElementById('corner-radius-value');
             if (slider) slider.value = r;
             if (val) val.textContent = r + 'px';
-            // Sensible default notch for the model (iPads have none).
-            const defNotch = model === 'ipad' ? 'none' : model === 'samsung' ? 'punch' : 'island';
+            // Sensible default notch for the model (iPads and Macs have none).
+            const defNotch = model === 'ipad' || model === 'mac' ? 'none' : model === 'samsung' ? 'punch' : 'island';
             setScreenshotSetting('frame.notch', defNotch);
             document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === defNotch));
             // Switch the output canvas to this device class's dimensions, unless the
             // current size already matches (don't clobber a deliberate sub-size).
-            const classPrefix = model === 'ipad' ? 'ipad' : model === 'samsung' ? 'android' : 'iphone';
-            const defaultSize = model === 'ipad' ? 'ipad-13' : model === 'samsung' ? 'android-phone-hd' : 'iphone-6.9';
+            const classPrefix = model === 'ipad' ? 'ipad' : model === 'samsung' ? 'android' : model === 'mac' ? 'mac' : 'iphone';
+            const defaultSize = model === 'ipad' ? 'ipad-13' : model === 'samsung' ? 'android-phone-hd' : model === 'mac' ? 'mac-2880' : 'iphone-6.9';
             if (typeof state !== 'undefined' && !(state.outputDevice || '').startsWith(classPrefix)) {
                 state.outputDevice = defaultSize;
                 if (typeof syncUIWithState === 'function') syncUIWithState();

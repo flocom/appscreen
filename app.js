@@ -35,7 +35,7 @@ const state = {
             rotation: 0,
             perspective: 0,
             cornerRadius: 24,
-            deviceModel2D: 'iphone', // 2D device model: 'iphone' | 'samsung'
+            deviceModel2D: 'iphone', // 2D device model: 'iphone' | 'ipad' | 'samsung' | 'mac'
             bezelEnabled: false,      // draw a device bezel/shell in 2D
             spanScreens: 1,           // panorama: span this screenshot across N output slots
             use3D: false,
@@ -1357,6 +1357,10 @@ const deviceDimensions = {
     'ipad-13': { width: 2064, height: 2752 },
     'ipad-12.9': { width: 2048, height: 2732 },
     'ipad-11': { width: 1668, height: 2388 },
+    'mac-2880': { width: 2880, height: 1800 },
+    'mac-2560': { width: 2560, height: 1600 },
+    'mac-1440': { width: 1440, height: 900 },
+    'mac-1280': { width: 1280, height: 800 },
     'android-phone': { width: 1080, height: 1920 },
     'android-phone-hd': { width: 1440, height: 2560 },
     'android-tablet-7': { width: 1200, height: 1920 },
@@ -9571,10 +9575,12 @@ function drawNotchShape(context, x, y, width, height, radius, style) {
     context.restore();
 }
 
-// Shared: draw a 2D device bezel/shell (iPhone or Samsung) around the screen.
+// Shared: draw a 2D device bezel/shell (iPhone, iPad, Samsung or Mac) around the screen.
 function drawDeviceBezel(context, x, y, width, height, radius, model) {
     const isSamsung = model === 'samsung';
     const isIpad = model === 'ipad';
+    const isMac = model === 'mac';
+    if (isMac) { drawMacBezel(context, x, y, width, height, radius); return; }
     // iPad bezels are uniform and a touch thinner than iPhone; Samsung thinnest.
     const bw = width * (isSamsung ? 0.020 : isIpad ? 0.024 : 0.028);
     context.save();
@@ -9590,6 +9596,50 @@ function drawDeviceBezel(context, x, y, width, height, radius, model) {
     context.beginPath();
     context.roundRect(x - bw, y - bw, width + bw * 2, height + bw * 2, radius + bw);
     context.stroke();
+    context.restore();
+}
+
+// Shared: draw a Mac (iMac / Studio Display style) shell — a thin uniform dark
+// bezel, an aluminium chin with a centred logo notch, and a short stand foot.
+// Bezel thickness scales off the screen's shorter side so it stays even on the
+// landscape Mac aspect ratio.
+function drawMacBezel(context, x, y, width, height, radius) {
+    const bw = Math.min(width, height) * 0.018;       // thin uniform bezel
+    const chin = height * 0.085;                       // aluminium chin below the screen
+    const standW = width * 0.16, standH = height * 0.05, neckH = height * 0.045;
+    context.save();
+    // Aluminium chin + lower body
+    context.fillStyle = '#c9ccd1';
+    context.beginPath();
+    context.roundRect(x - bw, y + height - radius, width + bw * 2, chin + radius, [0, 0, bw * 1.5, bw * 1.5]);
+    context.fill();
+    // Centred logo dimple on the chin
+    context.fillStyle = 'rgba(0,0,0,0.18)';
+    context.beginPath();
+    context.arc(x + width / 2, y + height + chin * 0.45, chin * 0.16, 0, Math.PI * 2);
+    context.fill();
+    // Main dark bezel ring around the screen
+    context.lineWidth = bw;
+    context.strokeStyle = '#0e0e10';
+    context.beginPath();
+    context.roundRect(x - bw / 2, y - bw / 2, width + bw, height + bw, radius + bw / 2);
+    context.stroke();
+    // Subtle metallic outer edge
+    context.lineWidth = Math.max(1, bw * 0.16);
+    context.strokeStyle = 'rgba(255,255,255,0.18)';
+    context.beginPath();
+    context.roundRect(x - bw, y - bw, width + bw * 2, height + bw * 2, radius + bw);
+    context.stroke();
+    // Neck + stand foot
+    const chinBottom = y + height + chin;
+    context.fillStyle = '#b7babf';
+    context.beginPath();
+    context.roundRect(x + width / 2 - standW * 0.18, chinBottom, standW * 0.36, neckH, [0, 0, bw, bw]);
+    context.fill();
+    context.fillStyle = '#a9acb2';
+    context.beginPath();
+    context.roundRect(x + width / 2 - standW / 2, chinBottom + neckH, standW, standH, standH * 0.4);
+    context.fill();
     context.restore();
 }
 
