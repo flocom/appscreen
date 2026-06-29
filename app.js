@@ -9599,47 +9599,67 @@ function drawDeviceBezel(context, x, y, width, height, radius, model) {
     context.restore();
 }
 
-// Shared: draw a Mac (iMac / Studio Display style) shell — a thin uniform dark
-// bezel, an aluminium chin with a centred logo notch, and a short stand foot.
-// Bezel thickness scales off the screen's shorter side so it stays even on the
-// landscape Mac aspect ratio.
+// Shared: draw a Mac (iMac-style) shell — a thin black bezel around the screen,
+// a brushed-aluminium chin, and a tapered neck + foot stand. Aluminium surfaces
+// use vertical gradients for a metallic sheen. Geometry scales off the screen so
+// it stays proportional on the landscape Mac aspect ratio.
 function drawMacBezel(context, x, y, width, height, radius) {
-    const bw = Math.min(width, height) * 0.018;       // thin uniform bezel
-    const chin = height * 0.085;                       // aluminium chin below the screen
-    const standW = width * 0.16, standH = height * 0.05, neckH = height * 0.045;
+    const bw = Math.min(width, height) * 0.016;        // thin uniform black bezel
+    const chin = height * 0.10;                        // aluminium chin below the screen
+    const cx = x + width / 2;
+    const bodyX = x - bw, bodyW = width + bw * 2;
+    const screenBottom = y + height;
     context.save();
-    // Aluminium chin + lower body
-    context.fillStyle = '#c9ccd1';
+
+    // ---- Stand: tapered neck + foot (drawn first, behind the body) ----
+    const chinBottom = screenBottom + chin;
+    const neckTopW = width * 0.20, neckBotW = width * 0.30, neckH = height * 0.06;
+    const footW = width * 0.36, footH = height * 0.024;
+    const neckGrad = context.createLinearGradient(0, chinBottom, 0, chinBottom + neckH);
+    neckGrad.addColorStop(0, '#c4c8ce');
+    neckGrad.addColorStop(1, '#9b9fa6');
+    context.fillStyle = neckGrad;
     context.beginPath();
-    context.roundRect(x - bw, y + height - radius, width + bw * 2, chin + radius, [0, 0, bw * 1.5, bw * 1.5]);
+    context.moveTo(cx - neckTopW / 2, chinBottom);
+    context.lineTo(cx + neckTopW / 2, chinBottom);
+    context.lineTo(cx + neckBotW / 2, chinBottom + neckH);
+    context.lineTo(cx - neckBotW / 2, chinBottom + neckH);
+    context.closePath();
     context.fill();
-    // Centred logo dimple on the chin
-    context.fillStyle = 'rgba(0,0,0,0.18)';
+    const footGrad = context.createLinearGradient(0, chinBottom + neckH - footH, 0, chinBottom + neckH + footH);
+    footGrad.addColorStop(0, '#d6dade');
+    footGrad.addColorStop(1, '#a3a7ae');
+    context.fillStyle = footGrad;
     context.beginPath();
-    context.arc(x + width / 2, y + height + chin * 0.45, chin * 0.16, 0, Math.PI * 2);
+    context.roundRect(cx - footW / 2, chinBottom + neckH - footH * 0.2, footW, footH, footH * 0.5);
     context.fill();
-    // Main dark bezel ring around the screen
+
+    // ---- Aluminium chin (body front below the screen) ----
+    const chinGrad = context.createLinearGradient(0, screenBottom, 0, chinBottom);
+    chinGrad.addColorStop(0,    '#e7e9ed');
+    chinGrad.addColorStop(0.45, '#c9cdd3');
+    chinGrad.addColorStop(1,    '#aeb2b9');
+    context.fillStyle = chinGrad;
+    context.beginPath();
+    context.roundRect(bodyX, screenBottom, bodyW, chin, [0, 0, bw * 2.2, bw * 2.2]);
+    context.fill();
+    // bright sheen line along the top of the chin
+    context.fillStyle = 'rgba(255,255,255,0.5)';
+    context.fillRect(bodyX + bw, screenBottom + bw * 0.4, bodyW - bw * 2, Math.max(1, bw * 0.16));
+
+    // ---- Black bezel ring around the screen ----
     context.lineWidth = bw;
-    context.strokeStyle = '#0e0e10';
+    context.strokeStyle = '#0c0c0e';
     context.beginPath();
     context.roundRect(x - bw / 2, y - bw / 2, width + bw, height + bw, radius + bw / 2);
     context.stroke();
-    // Subtle metallic outer edge
-    context.lineWidth = Math.max(1, bw * 0.16);
-    context.strokeStyle = 'rgba(255,255,255,0.18)';
+    // subtle metallic outer rim catching the light
+    context.lineWidth = Math.max(1, bw * 0.18);
+    context.strokeStyle = 'rgba(255,255,255,0.22)';
     context.beginPath();
     context.roundRect(x - bw, y - bw, width + bw * 2, height + bw * 2, radius + bw);
     context.stroke();
-    // Neck + stand foot
-    const chinBottom = y + height + chin;
-    context.fillStyle = '#b7babf';
-    context.beginPath();
-    context.roundRect(x + width / 2 - standW * 0.18, chinBottom, standW * 0.36, neckH, [0, 0, bw, bw]);
-    context.fill();
-    context.fillStyle = '#a9acb2';
-    context.beginPath();
-    context.roundRect(x + width / 2 - standW / 2, chinBottom + neckH, standW, standH, standH * 0.4);
-    context.fill();
+
     context.restore();
 }
 
