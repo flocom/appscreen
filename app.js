@@ -9599,69 +9599,216 @@ function drawDeviceBezel(context, x, y, width, height, radius, model) {
     context.restore();
 }
 
-// Shared: draw a Mac (MacBook Pro-style) shell — a thin black bezel around the
-// screen (the lid), a dark hinge, and an aluminium base shown in slight
-// perspective (wider at the front) with a centred finger-groove for opening the
-// lid. Aluminium surfaces use vertical gradients for a metallic sheen. Geometry
-// scales off the screen so it stays proportional on the landscape Mac ratio.
+// Shared: draw a Mac (MacBook Pro-style) shell around the screen — a thin
+// aluminium-rimmed lid with a dark bezel frame (the screenshot shows through an
+// even-odd cutout, never grey metal) and a small camera dot, then a slim
+// aluminium base in slight perspective: a lit "open-lid" deck sliver, a two-tone
+// front lip with a finger-groove, and a soft contact shadow grounding it all.
+// All geometry scales off the screen so it stays proportional at any resolution.
 function drawMacBezel(context, x, y, width, height, radius) {
-    const bw = Math.min(width, height) * 0.014;        // thin uniform black bezel
-    const cx = x + width / 2;
-    const screenBottom = y + height;
     context.save();
 
-    // ---- Dark hinge strip between the lid and the base ----
-    const hingeH = height * 0.014;
-    const hingeTop = screenBottom + bw * 0.5;
-    context.fillStyle = '#26282c';
-    context.beginPath();
-    context.roundRect(x - bw * 0.5, hingeTop, width + bw, hingeH, hingeH * 0.4);
-    context.fill();
+    // ---- Proportions (all derived from screen width/height) ----
+    const bezel = width * 0.018;             // dark bezel thickness around screen
+    const lidLeft = x - bezel;
+    const lidTop = y - bezel;
+    const lidW = width + bezel * 2;
+    const lidH = height + bezel * 2;
+    const lidRadius = radius + bezel * 0.85;
 
-    // ---- Aluminium base (keyboard deck) in slight perspective ----
-    const baseTop = hingeTop + hingeH;
-    const baseH = height * 0.05;
-    const topW = width + bw * 2, botW = width * 1.10;   // wider at the front
-    const tl = cx - topW / 2, tr = cx + topW / 2;
-    const bl = cx - botW / 2, br = cx + botW / 2;
-    const fr = baseH * 0.55;                            // rounded front corners
-    const baseGrad = context.createLinearGradient(0, baseTop, 0, baseTop + baseH);
-    baseGrad.addColorStop(0,    '#d9dce1');
-    baseGrad.addColorStop(0.45, '#c2c6cc');
-    baseGrad.addColorStop(1,    '#a4a8af');
-    context.fillStyle = baseGrad;
-    context.beginPath();
-    context.moveTo(tl, baseTop);
-    context.lineTo(tr, baseTop);
-    context.lineTo(br, baseTop + baseH - fr);
-    context.quadraticCurveTo(br, baseTop + baseH, br - fr, baseTop + baseH);
-    context.lineTo(bl + fr, baseTop + baseH);
-    context.quadraticCurveTo(bl, baseTop + baseH, bl, baseTop + baseH - fr);
-    context.closePath();
-    context.fill();
-    // bright sheen line along the top of the base
-    context.fillStyle = 'rgba(255,255,255,0.45)';
-    context.fillRect(tl + bw, baseTop + Math.max(1, baseH * 0.05), topW - bw * 2, Math.max(1, bw * 0.16));
-    // centred finger-groove (shallow dip on the front edge)
-    const grW = width * 0.13, grH = baseH * 0.5;
-    context.fillStyle = 'rgba(0,0,0,0.16)';
-    context.beginPath();
-    context.moveTo(cx - grW / 2, baseTop);
-    context.quadraticCurveTo(cx, baseTop + grH, cx + grW / 2, baseTop);
-    context.closePath();
-    context.fill();
+    // Base (laptop deck) geometry below the lid (kept under height*0.14 total)
+    const deckBandH = height * 0.03;         // lighter "keyboard deck" sliver + seam (open-lid hint)
+    const deckTopY = lidTop + lidH;          // top of the deck top-surface band
+    const lipTopY = deckTopY + deckBandH;    // top of the front aluminium lip
+    const lipH = height * 0.06;              // front lip height
+    const baseBottomY = lipTopY + lipH;      // bottom of laptop base
+    const baseOverhang = width * 0.075;      // base is wider than lid each side
+    const baseLeft = x - baseOverhang;
+    const baseRight = x + width + baseOverhang;
+    const baseW = baseRight - baseLeft;
+    const lipRadius = lipH * 0.5;
+    const cx = x + width / 2;
 
-    // ---- Black bezel ring around the screen ----
-    context.lineWidth = bw;
-    context.strokeStyle = '#0c0c0e';
+    // helper: rounded-rect subpath (no beginPath, for even-odd composites)
+    function rrPath(rx, ry, rw, rh, rr) {
+      context.moveTo(rx + rr, ry);
+      context.arcTo(rx + rw, ry, rx + rw, ry + rh, rr);
+      context.arcTo(rx + rw, ry + rh, rx, ry + rh, rr);
+      context.arcTo(rx, ry + rh, rx, ry, rr);
+      context.arcTo(rx, ry, rx + rw, ry, rr);
+      context.closePath();
+    }
+
+    // ============================================================
+    // 1) CONTACT SHADOW under the whole machine
+    // ============================================================
+    context.save();
+    context.shadowColor = 'rgba(0,0,0,0.38)';
+    context.shadowBlur = height * 0.08;
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = height * 0.05;
+    context.fillStyle = 'rgba(0,0,0,1)';
     context.beginPath();
-    context.roundRect(x - bw / 2, y - bw / 2, width + bw, height + bw, radius + bw / 2);
+    rrPath(baseLeft + baseW * 0.04, lipTopY, baseW * 0.92, lipH, lipRadius);
+    context.fill();
+    context.restore();
+
+    // reset shadow before crisp parts
+    context.shadowColor = 'transparent';
+    context.shadowBlur = 0;
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = 0;
+
+    // ============================================================
+    // 2) LID — aluminium outer rim + dark bezel FRAME (screen stays visible)
+    // ============================================================
+    // Thin aluminium rim around the whole lid (drawn as ring via even-odd)
+    const rim = bezel * 0.32;
+    const rimGrad = context.createLinearGradient(0, lidTop - rim, 0, lidTop + lidH + rim);
+    rimGrad.addColorStop(0, '#dfe2e6');
+    rimGrad.addColorStop(0.5, '#aeb2b8');
+    rimGrad.addColorStop(1, '#888c92');
+    context.fillStyle = rimGrad;
+    context.beginPath();
+    rrPath(lidLeft - rim, lidTop - rim, lidW + rim * 2, lidH + rim * 2, lidRadius + rim);
+    rrPath(lidLeft, lidTop, lidW, lidH, lidRadius);
+    context.fill('evenodd');
+
+    // Dark bezel ring: outer = lid rect, inner = screen rect (screenshot shows through)
+    const bezelGrad = context.createLinearGradient(0, lidTop, 0, lidTop + lidH);
+    bezelGrad.addColorStop(0, '#1a1b1f');
+    bezelGrad.addColorStop(0.5, '#0c0d0f');
+    bezelGrad.addColorStop(1, '#141517');
+    context.fillStyle = bezelGrad;
+    context.beginPath();
+    rrPath(lidLeft, lidTop, lidW, lidH, lidRadius);
+    rrPath(x, y, width, height, radius);
+    context.fill('evenodd');
+
+    // subtle inner shadow line just inside the screen edge for depth
+    context.save();
+    context.beginPath();
+    rrPath(x, y, width, height, radius);
+    context.clip();
+    context.strokeStyle = 'rgba(0,0,0,0.5)';
+    context.lineWidth = Math.max(1, bezel * 0.18);
+    context.beginPath();
+    rrPath(x + context.lineWidth * 0.5, y + context.lineWidth * 0.5,
+           width - context.lineWidth, height - context.lineWidth, radius);
     context.stroke();
-    // subtle metallic outer rim catching the light
-    context.lineWidth = Math.max(1, bw * 0.18);
-    context.strokeStyle = 'rgba(255,255,255,0.22)';
+    context.restore();
+
+    // Camera notch dot at top-center of bezel
+    const camR = Math.max(1, bezel * 0.16);
+    context.fillStyle = '#23262c';
     context.beginPath();
-    context.roundRect(x - bw, y - bw, width + bw * 2, height + bw * 2, radius + bw);
+    context.arc(cx, lidTop + bezel * 0.5, camR, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = '#0c1418';
+    context.beginPath();
+    context.arc(cx, lidTop + bezel * 0.5, camR * 0.55, 0, Math.PI * 2);
+    context.fill();
+
+    // ============================================================
+    // 3) KEYBOARD-DECK TOP SURFACE SLIVER (the 3D "open lid" hint)
+    //    A lighter aluminium band seen in perspective (trapezoid widening
+    //    toward the wider base) PLUS a crisp dark seam where the lid bottom
+    //    edge meets it — that gap is what sells "the lid is open".
+    // ============================================================
+    // dark seam / gap directly under the lid (hinge shadow line)
+    const seamH = deckBandH * 0.34;
+    const seamGrad = context.createLinearGradient(0, deckTopY, 0, deckTopY + seamH);
+    seamGrad.addColorStop(0, 'rgba(15,16,18,0.92)');
+    seamGrad.addColorStop(1, 'rgba(70,73,78,0.25)');
+    context.fillStyle = seamGrad;
+    context.beginPath();
+    context.moveTo(lidLeft + lidRadius * 0.35, deckTopY);
+    context.lineTo(lidLeft + lidW - lidRadius * 0.35, deckTopY);
+    context.lineTo(lidLeft + lidW - lidRadius * 0.35 + width * 0.01, deckTopY + seamH);
+    context.lineTo(lidLeft + lidRadius * 0.35 - width * 0.01, deckTopY + seamH);
+    context.closePath();
+    context.fill();
+
+    // the bright top-surface band itself (flat-ish, lit from above)
+    const bandTopY = deckTopY + seamH;
+    const deckGrad = context.createLinearGradient(0, bandTopY, 0, lipTopY);
+    deckGrad.addColorStop(0, '#f1f2f4');     // bright leading edge of the deck
+    deckGrad.addColorStop(0.55, '#dcdfe2');
+    deckGrad.addColorStop(1, '#c3c6cb');     // toward the front lip
+    context.fillStyle = deckGrad;
+    context.beginPath();
+    context.moveTo(lidLeft + lidRadius * 0.35 - width * 0.01, bandTopY);
+    context.lineTo(lidLeft + lidW - lidRadius * 0.35 + width * 0.01, bandTopY);
+    context.lineTo(baseRight - lipRadius, lipTopY);
+    context.lineTo(baseLeft + lipRadius, lipTopY);
+    context.closePath();
+    context.fill();
+
+    // crisp bright catch-light along the deck's leading (top) edge
+    context.strokeStyle = 'rgba(255,255,255,0.7)';
+    context.lineWidth = Math.max(1, height * 0.0022);
+    context.beginPath();
+    context.moveTo(lidLeft + lidRadius * 0.35 - width * 0.01 + 2, bandTopY + context.lineWidth);
+    context.lineTo(lidLeft + lidW - lidRadius * 0.35 + width * 0.01 - 2, bandTopY + context.lineWidth);
+    context.stroke();
+
+    // ============================================================
+    // 4) FRONT ALUMINIUM LIP (two-tone, rounded front, finger groove)
+    //    Two-tone: bright top edge (catching overhead light) rolling into
+    //    a darker mid front face, then a soft brighter bounce near the floor.
+    // ============================================================
+    const lipGrad = context.createLinearGradient(0, lipTopY, 0, baseBottomY);
+    lipGrad.addColorStop(0, '#f4f5f7');     // crisp top edge highlight
+    lipGrad.addColorStop(0.10, '#e0e3e6');
+    lipGrad.addColorStop(0.34, '#c2c6cb');
+    lipGrad.addColorStop(0.62, '#aaaeb4');  // front face (darker tone)
+    lipGrad.addColorStop(0.86, '#9b9fa5');
+    lipGrad.addColorStop(1, '#b0b4ba');     // soft bounce light at the rounded bottom
+    context.fillStyle = lipGrad;
+    context.beginPath();
+    rrPath(baseLeft, lipTopY, baseW, lipH, lipRadius);
+    context.fill();
+
+    // vertical falloff darkening toward the corners (cylindrical look)
+    const lipSide = context.createLinearGradient(baseLeft, 0, baseRight, 0);
+    lipSide.addColorStop(0, 'rgba(80,84,90,0.32)');
+    lipSide.addColorStop(0.12, 'rgba(80,84,90,0)');
+    lipSide.addColorStop(0.88, 'rgba(80,84,90,0)');
+    lipSide.addColorStop(1, 'rgba(80,84,90,0.32)');
+    context.fillStyle = lipSide;
+    context.beginPath();
+    rrPath(baseLeft, lipTopY, baseW, lipH, lipRadius);
+    context.fill();
+
+    // bright top highlight edge of the lip
+    context.strokeStyle = 'rgba(255,255,255,0.7)';
+    context.lineWidth = Math.max(1, height * 0.0028);
+    context.beginPath();
+    context.moveTo(baseLeft + lipRadius, lipTopY + context.lineWidth * 0.7);
+    context.lineTo(baseRight - lipRadius, lipTopY + context.lineWidth * 0.7);
+    context.stroke();
+
+    // finger groove: a wide, shallow, soft scoop centered on the front lip.
+    // Two stacked soft fills (shadow above, highlight lip below) read as a recess.
+    const grooveW = width * 0.2;
+    const grooveTop = lipTopY + lipH * 0.12;
+    const grooveBot = baseBottomY - lipH * 0.04;
+    const grooveH = grooveBot - grooveTop;
+    // shadow of the scoop
+    const gShadow = context.createLinearGradient(0, grooveTop, 0, grooveBot);
+    gShadow.addColorStop(0, 'rgba(60,64,70,0.0)');
+    gShadow.addColorStop(0.35, 'rgba(60,64,70,0.5)');
+    gShadow.addColorStop(1, 'rgba(60,64,70,0.0)');
+    context.fillStyle = gShadow;
+    context.beginPath();
+    rrPath(cx - grooveW / 2, grooveTop, grooveW, grooveH, grooveH * 0.5);
+    context.fill();
+    // thin bright catch-light along the bottom of the scoop
+    context.strokeStyle = 'rgba(245,247,250,0.55)';
+    context.lineWidth = Math.max(1, lipH * 0.05);
+    context.beginPath();
+    context.moveTo(cx - grooveW * 0.42, grooveBot - context.lineWidth);
+    context.lineTo(cx + grooveW * 0.42, grooveBot - context.lineWidth);
     context.stroke();
 
     context.restore();
