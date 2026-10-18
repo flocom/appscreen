@@ -11,6 +11,10 @@ export const OUTPUT_SIZES: Record<string, Size> = {
   "iphone-6.7": { width: 1290, height: 2796 },
   "iphone-6.5": { width: 1284, height: 2778 },
   "iphone-5.5": { width: 1242, height: 2208 },
+  // iPhone Duo — its own App Store Connect slot: inner 7.6" (portrait) and
+  // outer 5.4" cover display.
+  "iphone-duo-inner": { width: 2007, height: 2853 },
+  "iphone-duo-outer": { width: 1398, height: 2034 },
   "ipad-13": { width: 2064, height: 2752 },
   "ipad-12.9": { width: 2048, height: 2732 },
   "ipad-11": { width: 1668, height: 2388 },
@@ -26,14 +30,14 @@ export const OUTPUT_SIZES: Record<string, Size> = {
   "mac-2560": { width: 2560, height: 1600 },
   "mac-1440": { width: 1440, height: 900 },
   "mac-1280": { width: 1280, height: 800 },
-  "android-phone": { width: 1080, height: 1920 },
-  "android-phone-hd": { width: 1440, height: 2560 },
-  "android-tablet-7": { width: 1200, height: 1920 },
-  "android-tablet-10": { width: 1600, height: 2560 },
+  // App Store creative assets (iOS 27+): product page header 21:9, search
+  // results 3:2 (max size), and the 16:9 universal asset both accept (PNG).
+  "creative-header": { width: 3840, height: 1646 },
+  "creative-search": { width: 3840, height: 2560 },
+  "creative-universal": { width: 5244, height: 2950 },
   "web-og": { width: 1200, height: 630 },
   "web-twitter": { width: 1200, height: 675 },
   "web-hero": { width: 1920, height: 1080 },
-  "web-feature": { width: 1024, height: 500 },
 };
 
 export const OUTPUT_DEVICES = Object.keys(OUTPUT_SIZES);

@@ -35,9 +35,11 @@ const state = {
             rotation: 0,
             perspective: 0,
             cornerRadius: 24,
-            deviceModel2D: 'iphone', // 2D device model: 'iphone' | 'ipad' | 'samsung' | 'mac' | 'watch'
+            deviceModel2D: 'iphone', // 2D device model: 'iphone' | 'iphone-duo' | 'ipad' | 'mac' | 'watch'
             deviceMacFinish: 'silver', // Mac chassis finish: 'silver' | 'space-black'
             deviceWatchFinish: 'midnight', // Apple Watch case finish, see WATCH_FINISHES
+            deviceDuoFinish: 'night-sky', // iPhone Duo titanium finish, see DUO_FINISHES
+            deviceDuoDisplay: 'inner', // iPhone Duo display drawn off a Duo canvas: 'inner' | 'outer'
             bezelEnabled: false,      // draw a device bezel/shell in 2D
             spanScreens: 1,           // panorama: span this screenshot across N output slots
             use3D: false,
@@ -1361,6 +1363,14 @@ const deviceDimensions = {
     'iphone-6.7': { width: 1290, height: 2796 },
     'iphone-6.5': { width: 1284, height: 2778 },
     'iphone-5.5': { width: 1242, height: 2208 },
+    // iPhone Duo (book-style foldable) — its own App Store Connect slot, never
+    // scaled from another iPhone class. Two displays: the 7.6" inner screen
+    // (natively landscape, screenshots taken in portrait at 2007×2853 — the
+    // 1878×2670 panel's aspect, upscaled) and the 5.4" outer cover screen.
+    // Keys keep the `iphone-duo-` prefix; anything testing for the plain iPhone
+    // family must rule them out first (outputSizeFamily()).
+    'iphone-duo-inner': { width: 2007, height: 2853 },
+    'iphone-duo-outer': { width: 1398, height: 2034 },
     'ipad-13': { width: 2064, height: 2752 },
     'ipad-12.9': { width: 2048, height: 2732 },
     'ipad-11': { width: 1668, height: 2388 },
@@ -1379,54 +1389,109 @@ const deviceDimensions = {
     'mac-2560': { width: 2560, height: 1600 },
     'mac-1440': { width: 1440, height: 900 },
     'mac-1280': { width: 1280, height: 800 },
-    'android-phone': { width: 1080, height: 1920 },
-    'android-phone-hd': { width: 1440, height: 2560 },
-    'android-tablet-7': { width: 1200, height: 1920 },
-    'android-tablet-10': { width: 1600, height: 2560 },
+    // App Store creative assets (iOS 27+): the product page header (21:9) and
+    // the search results asset (3:2, 1920×1280 up to 3840×2560 — rendered at
+    // the maximum). The 16:9 universal asset is the one size both placements
+    // accept (PNG only); each crops it to its own ratio around the centre.
+    'creative-header': { width: 3840, height: 1646 },
+    'creative-search': { width: 3840, height: 2560 },
+    'creative-universal': { width: 5244, height: 2950 },
     'web-og': { width: 1200, height: 630 },
     'web-twitter': { width: 1200, height: 675 },
-    'web-hero': { width: 1920, height: 1080 },
-    'web-feature': { width: 1024, height: 500 }
+    'web-hero': { width: 1920, height: 1080 }
 };
 
 // The default watch size when the user picks the Watch device model.
 const DEFAULT_WATCH_DEVICE = 'watch-46';
+// …and the default iPhone Duo size: the inner display is the one people buy a
+// foldable for, and the larger of the two slots.
+const DEFAULT_DUO_DEVICE = 'iphone-duo-inner';
+
+// Which family an output size belongs to. Every key carries its family as a
+// prefix, but `iphone-duo-*` also starts with `iphone`, so the Duo has to be
+// ruled out before the plain iPhone — never test `startsWith('iphone')` alone.
+function outputSizeFamily(key) {
+    const k = String(key === undefined ? state.outputDevice : key);
+    if (k.startsWith('iphone-duo')) return 'iphone-duo';
+    for (const f of ['iphone', 'ipad', 'watch', 'mac', 'creative', 'web']) {
+        if (k.startsWith(f)) return f;
+    }
+    return k === 'custom' ? 'custom' : 'iphone';
+}
 
 // Is `key` (default: the project's output size) an Apple Watch canvas? Watch
 // canvases are an order of magnitude smaller than every other output size
 // (416 px wide vs 1320), so a few renderer defaults tuned in absolute pixels
 // — shadows, the auto-fit floor — key off this.
 function isWatchOutput(key) {
-    return String(key === undefined ? state.outputDevice : key).startsWith('watch');
+    return outputSizeFamily(key) === 'watch';
 }
 
-// 3D mockups are driven by the GLB models in models/ (three-renderer.js
-// deviceConfigs). There is no Apple Watch model, so watch output stays 2D.
+function isDuoOutput(key) {
+    return outputSizeFamily(key) === 'iphone-duo';
+}
+
+// App Store creative assets (header / search results / universal): single
+// landscape images, not screenshot slots — no panorama, any device mockup.
+function isCreativeOutput(key) {
+    return outputSizeFamily(key) === 'creative';
+}
+
+// Which iPhone Duo display a screen draws. On a Duo canvas the output size
+// decides (the two slots ARE the two displays); anywhere else — a header, a
+// web banner — it is the screen's own choice.
+function duoDisplayVariant(ss) {
+    if (isDuoOutput()) return state.outputDevice === 'iphone-duo-outer' ? 'outer' : 'inner';
+    return (ss && ss.deviceDuoDisplay === 'outer') ? 'outer' : 'inner';
+}
+
+// 3D mockups are driven by the models in three-renderer.js deviceConfigs.
+// There is no Apple Watch model, so watch output stays 2D.
 function output3DSupported() {
     return !isWatchOutput();
 }
 
 // Human family label for an output size key, for the screenshot list.
 function outputDeviceFamilyLabel(key) {
-    const k = String(key === undefined ? state.outputDevice : key);
-    if (k.startsWith('watch')) return 'Apple Watch';
-    if (k.startsWith('ipad')) return 'iPad';
-    if (k.startsWith('mac')) return 'Mac';
-    if (k.startsWith('android')) return 'Android';
-    if (k.startsWith('web')) return 'Web';
-    if (k === 'custom') return 'Custom';
-    return 'iPhone';
+    switch (outputSizeFamily(key)) {
+        case 'iphone-duo': return 'iPhone Duo';
+        case 'watch': return 'Apple Watch';
+        case 'ipad': return 'iPad';
+        case 'mac': return 'Mac';
+        case 'creative': return 'App Store asset';
+        case 'web': return 'Web';
+        case 'custom': return 'Custom';
+        default: return 'iPhone';
+    }
 }
 
 // The 2D device model that goes with an output size family. Mirrors the
-// model→size map the Device Model buttons use, in the other direction.
+// model→size map the Device Model buttons use, in the other direction. The
+// landscape marketing canvases (creative assets, web, custom) have no device
+// of their own and frame an iPhone by default.
 function outputDeviceModel2D(key) {
-    const k = String(key === undefined ? state.outputDevice : key);
-    if (k.startsWith('watch')) return 'watch';
-    if (k.startsWith('ipad')) return 'ipad';
-    if (k.startsWith('mac')) return 'mac';
-    if (k.startsWith('android')) return 'samsung';
+    const f = outputSizeFamily(key);
+    if (f === 'iphone-duo' || f === 'watch' || f === 'ipad' || f === 'mac') return f;
     return 'iphone';
+}
+
+// Label a freshly imported image by its pixel size. The exact App Store sizes
+// are matched first: an iPad 11" (1668×2388, 0.698) and the iPhone Duo inner
+// screen (2007×2853, 0.703) are within a percent of each other by ratio alone.
+function detectImageDeviceType(w, h) {
+    const lo = Math.min(w, h), hi = Math.max(w, h);
+    const near = (a, b) => Math.abs(a - b) / b < 0.01;
+    for (const key of ['iphone-duo-inner', 'iphone-duo-outer', 'creative-header', 'creative-search', 'creative-universal']) {
+        const d = deviceDimensions[key];
+        if (near(lo, Math.min(d.width, d.height)) && near(hi, Math.max(d.width, d.height))) {
+            return outputDeviceFamilyLabel(key);
+        }
+    }
+    const ratio = lo / hi;
+    // Watch panels are tiny (largest 422x514) and their ratio overlaps the
+    // iPad's — check size before ratio.
+    if (hi <= 560) return 'Apple Watch';
+    return ratio > 0.6 ? 'iPad' : 'iPhone';
 }
 
 // Pixel size of any output key, `custom` included — deviceDimensions alone
@@ -3197,6 +3262,25 @@ function reconstructElementImages(elements) {
     });
 }
 
+// Android support (the Samsung Galaxy mockup, its punch-hole camera and the
+// Play Store output sizes) was removed, and the iPhone Duo took the Samsung's
+// place. Projects saved before then still name them: their screens become
+// iPhones with a Dynamic Island (drawNotchShape() no longer draws a punch
+// hole), and an Android canvas becomes the iPhone 6.9" (loadState() falls back
+// for any output size it doesn't know).
+function retireAndroidDeviceSettings(record) {
+    const fix = (ss) => {
+        if (!ss || typeof ss !== 'object') return;
+        if (ss.deviceModel2D === 'samsung') ss.deviceModel2D = 'iphone';
+        if (ss.device3D === 'samsung') { ss.device3D = 'iphone'; delete ss.frameColor; }
+        if (ss.frame && ss.frame.notch === 'punch') ss.frame.notch = 'island';
+    };
+    if (!record) return;
+    fix(record.screenshot);
+    fix(record.defaults && record.defaults.screenshot);
+    (record.screenshots || []).forEach(s => fix(s && s.screenshot));
+}
+
 // Load state — fetch the current project from the server (the only store)
 function loadState(injectedRecord) {
     // Claim this load synchronously, so any still-in-flight previous load goes
@@ -3229,6 +3313,7 @@ function loadState(injectedRecord) {
                     // A newer load superseded us during the await → abort without
                     // touching state (it now belongs to the newer project).
                     if (isStale()) { resolve(); return; }
+                    retireAndroidDeviceSettings(parsed);
                     // Check if this is an old-style project (no per-screenshot settings)
                     const isOldFormat = !parsed.defaults && (parsed.background || parsed.screenshot || parsed.text);
                     const hasScreenshotsWithoutSettings = parsed.screenshots?.some(s => !s.background && !s.screenshot && !s.text);
@@ -3525,6 +3610,8 @@ function resetStateToDefaults() {
             deviceModel2D: 'iphone',
             deviceMacFinish: 'silver',
             deviceWatchFinish: 'midnight',
+            deviceDuoFinish: 'night-sky',
+            deviceDuoDisplay: 'inner',
             bezelEnabled: false,
             spanScreens: 1,
             use3D: false,
@@ -6067,10 +6154,11 @@ function setupEventListeners() {
             state.outputDevice = opt.dataset.device;
 
             // Moving to/from the Apple Watch is a 3× jump in canvas size, so the
-            // absolute text sizes and the 2D device model both have to follow.
+            // absolute text sizes have to follow; the device model follows any
+            // change of family (and every Duo inner ↔ outer switch).
             rescaleTextForOutput(prevDevice, state.outputDevice);
-            if (isWatchOutput() !== isWatchOutput(prevDevice)) {
-                if (isWatchOutput()) adoptWatchDeviceModel(); else dropWatchDeviceModel(state.outputDevice);
+            if (outputSizeFamily() !== outputSizeFamily(prevDevice) || isDuoOutput()) {
+                adaptDeviceModelToOutput(prevDevice, state.outputDevice);
                 if (typeof syncDeviceTextExtras === 'function') syncDeviceTextExtras();
                 syncUIWithState();
             }
@@ -6649,6 +6737,8 @@ function setupEventListeners() {
             if (use3D && typeof updateScreenTexture === 'function') {
                 updateScreenTexture();
             }
+            // Model-specific rows (the Duo display choice) differ between 2D and 3D.
+            if (typeof syncDeviceTextExtras === 'function') syncDeviceTextExtras();
 
             updateCanvas();
         });
@@ -6677,6 +6767,7 @@ function setupEventListeners() {
             if (defaultColor && typeof setPhoneFrameColor === 'function') {
                 setTimeout(() => setPhoneFrameColor(defaultColor, device3D), 100);
             }
+            if (typeof syncDeviceTextExtras === 'function') syncDeviceTextExtras();
 
             updateCanvas();
         });
@@ -8612,16 +8703,8 @@ async function processDesktopImageFile(fileData) {
     return new Promise((resolve) => {
         const img = new Image();
         img.onload = async () => {
-            // Detect device type based on aspect ratio. Watch panels are tiny
-            // (the largest is 422x514) and their ratio overlaps the iPad's, so
-            // size has to be checked before the ratio.
-            const ratio = img.width / img.height;
-            let deviceType = 'iPhone';
-            if (Math.max(img.width, img.height) <= 560) {
-                deviceType = 'Apple Watch';
-            } else if (ratio > 0.6) {
-                deviceType = 'iPad';
-            }
+            // Label the screen by the image's size (detectImageDeviceType).
+            const deviceType = detectImageDeviceType(img.width, img.height);
 
             // Compress before the image enters the project (see processImageFile).
             const optimized = await optimizeImportedImage(fileData.dataUrl);
@@ -8725,16 +8808,8 @@ async function processImageFile(file) {
         reader.onload = async (e) => {
             const img = new Image();
             img.onload = async () => {
-                // Detect device type based on aspect ratio. Watch panels are
-                // tiny (the largest is 422x514) and their ratio overlaps the
-                // iPad's, so size has to be checked before the ratio.
-                const ratio = img.width / img.height;
-                let deviceType = 'iPhone';
-                if (Math.max(img.width, img.height) <= 560) {
-                    deviceType = 'Apple Watch';
-                } else if (ratio > 0.6) {
-                    deviceType = 'iPad';
-                }
+                // Label the screen by the image's size (detectImageDeviceType).
+                const deviceType = detectImageDeviceType(img.width, img.height);
 
                 // Compress BEFORE the image enters the project, so the editor
                 // holds — and later uploads — the small version, not the
@@ -9529,9 +9604,112 @@ function dropWatchDeviceModel(nextKey) {
 }
 
 // DEVICE_2D_RADIUS lives in appstore-features.js, which loads after app.js —
-// safe to read from a function body, never at module scope.
-function deviceModelRadius(model, fallback) {
-    return (typeof DEVICE_2D_RADIUS !== 'undefined' && DEVICE_2D_RADIUS[model]) || fallback;
+// safe to read from a function body, never at module scope. The iPhone Duo's
+// two displays round very differently (a phone-like cover screen, a tablet-
+// like inner one), so its radius depends on which display is drawn.
+function deviceModelRadius(model, fallback, duoVariant) {
+    const key = model === 'iphone-duo' && duoVariant === 'inner' ? 'iphone-duo-inner' : model;
+    return (typeof DEVICE_2D_RADIUS !== 'undefined' && DEVICE_2D_RADIUS[key]) || fallback;
+}
+
+// The notch a model ships with: the Duo's outer screen has a Dynamic Island;
+// the inner screen hides its camera under the panel.
+function defaultNotchFor(model, duoVariant) {
+    if (model === 'ipad' || model === 'mac' || model === 'watch') return 'none';
+    if (model === 'iphone-duo') return duoVariant === 'outer' ? 'island' : 'none';
+    return 'island';
+}
+
+// Landscape marketing canvases take whatever device the user frames on them,
+// so moving to one never rewrites the mockup.
+function outputHostsAnyDevice(key) {
+    const f = outputSizeFamily(key);
+    return f === 'creative' || f === 'web' || f === 'custom';
+}
+
+// Swap a screen's 3D model, resetting its frame colour to the new model's
+// first finish — preset ids are per model, an iPhone 'natural' means nothing
+// on a Duo.
+function set3DDevice(ss, type) {
+    ss.device3D = type;
+    const presets = typeof frameColorPresets !== 'undefined' ? frameColorPresets[type] : null;
+    if (presets && presets.length) ss.frameColor = presets[0].id;
+}
+
+// Moving onto an iPhone Duo canvas makes every phone screen a Duo, with the
+// radius and notch of the display that canvas is (inner ↔ outer switches
+// re-run this too). Tablets, Macs and watches the user put on a phone project
+// are left alone, and only a notch still at a stock default is replaced — a
+// deliberate Notch survives.
+function adoptDuoDeviceModel(prevKey) {
+    const variant = duoDisplayVariant();
+    const radius = deviceModelRadius('iphone-duo', 44, variant);
+    const notch = defaultNotchFor('iphone-duo', variant);
+    const adopt = (ss) => {
+        if (!ss) return;
+        const m = ss.deviceModel2D || 'iphone';
+        if (m !== 'iphone' && m !== 'iphone-duo' && m !== 'samsung') return;
+        ss.deviceModel2D = 'iphone-duo';
+        ss.deviceDuoDisplay = variant;
+        ss.cornerRadius = radius;
+        if (ss.frame && (!ss.frame.notch || ss.frame.notch === 'none' || ss.frame.notch === 'island')) ss.frame.notch = notch;
+        if (ss.device3D === 'iphone' || ss.device3D === 'samsung') set3DDevice(ss, 'iphone-duo');
+    };
+    (state.screenshots || []).forEach(s => adopt(s.screenshot));
+    adopt(state.defaults && state.defaults.screenshot);
+}
+
+// …and leaving it for another device family turns Duo screens back into that
+// family's device. Going to a landscape marketing canvas keeps the Duo — it
+// is the point of a header showing off the foldable — and pins the display it
+// was drawing, since the canvas no longer decides it.
+function dropDuoDeviceModel(prevKey, nextKey) {
+    const prevVariant = String(prevKey) === 'iphone-duo-outer' ? 'outer' : 'inner';
+    if (outputHostsAnyDevice(nextKey)) {
+        // A screen whose image is a Duo screenshot keeps the display it was
+        // taken on (inner 0.703 vs outer 0.687 wide-to-tall); anything else
+        // keeps the display the canvas was showing.
+        const pin = (ss, img) => {
+            if (!ss || ss.deviceModel2D !== 'iphone-duo') return;
+            const label = img && img.width ? detectImageDeviceType(img.width, img.height) : '';
+            ss.deviceDuoDisplay = label === 'iPhone Duo' ? (img.width / img.height > 0.695 ? 'inner' : 'outer') : prevVariant;
+        };
+        (state.screenshots || []).forEach(s => pin(s.screenshot, typeof getScreenshotImage === 'function' ? getScreenshotImage(s) : s.image));
+        pin(state.defaults && state.defaults.screenshot);
+        return;
+    }
+    const model = outputDeviceModel2D(nextKey);
+    const radius = deviceModelRadius(model, 52);
+    const drop = (ss) => {
+        if (!ss) return;
+        if (ss.device3D === 'iphone-duo') set3DDevice(ss, 'iphone');
+        if (ss.deviceModel2D !== 'iphone-duo') return;
+        ss.deviceModel2D = model;
+        ss.cornerRadius = radius;
+        if (ss.frame && (ss.frame.notch === 'none' || ss.frame.notch === 'island')) ss.frame.notch = defaultNotchFor(model);
+    };
+    (state.screenshots || []).forEach(s => drop(s.screenshot));
+    drop(state.defaults && state.defaults.screenshot);
+}
+
+// One place for everything that has to follow the canvas when the output size
+// changes family (Device Model buttons and the output-size menu both land
+// here). Text sizes are rescaled separately by rescaleTextForOutput().
+function adaptDeviceModelToOutput(prevKey, nextKey) {
+    if (prevKey === nextKey) return;
+    if (isWatchOutput(nextKey) !== isWatchOutput(prevKey)) {
+        if (isWatchOutput(nextKey)) adoptWatchDeviceModel(); else dropWatchDeviceModel(nextKey);
+    }
+    if (isDuoOutput(nextKey)) adoptDuoDeviceModel(prevKey);
+    else if (isDuoOutput(prevKey)) dropDuoDeviceModel(prevKey, nextKey);
+    // A creative asset is one image, not a row of screenshot slots — a
+    // panorama span would be sliced into files App Store Connect can't use.
+    if (isCreativeOutput(nextKey) && !isCreativeOutput(prevKey)) {
+        (state.screenshots || []).forEach(s => { if (s.screenshot) s.screenshot.spanScreens = 1; });
+        if (state.defaults && state.defaults.screenshot) state.defaults.screenshot.spanScreens = 1;
+    }
+    // The Duo's 3D model is a different mesh per display.
+    if (typeof refresh3DDeviceVariant === 'function') refresh3DDeviceVariant();
 }
 
 // A few renderer defaults are stored in absolute canvas pixels, tuned against a
@@ -9540,7 +9718,7 @@ function deviceModelRadius(model, fallback) {
 // much narrower the canvas is. Keyed off ONE screen's width (baseWidth), not
 // the panorama-multiplied total, so a spanned screen doesn't lose the
 // compensation. 700 sits below every other stock output size (the smallest is
-// web-feature at 1024), so nothing but the watch is affected.
+// web-og at 1200), so nothing but the watch is affected.
 function smallCanvasScale(dims) {
     const w = (dims && (dims.baseWidth || dims.width)) || 0;
     return w > 0 && w < 700 ? w / 1320 : 1;
@@ -10118,9 +10296,14 @@ function drawScreenshotToContext(context, dims, img, settings) {
             context, x, y, imgWidth, imgHeight, radius,
             settings.deviceModel2D || 'iphone',
             settings.deviceMacFinish || 'silver',
-            // The Ultra case shape follows the output size, not a user choice:
-            // 422×514 and 410×502 ARE the Ultra panels.
-            { finish: settings.deviceWatchFinish || 'midnight', ultra: /^watch-ultra/.test(state.outputDevice) }
+            {
+                // The Ultra case shape follows the output size, not a user
+                // choice: 422×514 and 410×502 ARE the Ultra panels.
+                finish: settings.deviceWatchFinish || 'midnight',
+                ultra: /^watch-ultra/.test(state.outputDevice),
+                duoFinish: settings.deviceDuoFinish || 'night-sky',
+                duoVariant: duoDisplayVariant(settings)
+            }
         );
         if (hasNotch) drawNotchShape(context, x, y, imgWidth, imgHeight, radius, settings.frame.notch);
         context.restore();
@@ -10161,40 +10344,179 @@ function drawNotchShape(context, x, y, width, height, radius, style) {
         context.beginPath();
         context.roundRect(x + width / 2 - w / 2, y - 1, w, h, [0, 0, r, r]);
         context.fill();
-    } else if (style === 'punch') {
-        // Samsung-style centered punch-hole camera
-        const r = width * 0.018;
-        context.beginPath();
-        context.arc(x + width / 2, y + width * 0.04, r, 0, Math.PI * 2);
-        context.fill();
     }
     context.restore();
 }
 
-// Shared: draw a 2D device bezel/shell (iPhone, iPad, Samsung, Mac or Apple
-// Watch) around the screen. `watch` carries the watch-only extras: { finish,
-// ultra } — see drawWatchBezel.
-function drawDeviceBezel(context, x, y, width, height, radius, model, macFinish, watch) {
-    const isSamsung = model === 'samsung';
+// Shared: draw a 2D device bezel/shell (iPhone, iPhone Duo, iPad, Mac or
+// Apple Watch) around the screen. `extra` carries the model-specific options:
+// { finish, ultra } for the watch (see drawWatchBezel), { duoFinish,
+// duoVariant } for the iPhone Duo (see drawDuoBezel). Projects saved before the
+// Duo replaced the Samsung model may still say 'samsung' — that, and any other
+// unknown model, falls through to the iPhone shell.
+function drawDeviceBezel(context, x, y, width, height, radius, model, macFinish, extra) {
     const isIpad = model === 'ipad';
     const isMac = model === 'mac';
     if (isMac) { drawMacBezel(context, x, y, width, height, radius, macFinish); return; }
-    if (model === 'watch') { drawWatchBezel(context, x, y, width, height, radius, watch); return; }
-    // iPad bezels are uniform and a touch thinner than iPhone; Samsung thinnest.
-    const bw = width * (isSamsung ? 0.020 : isIpad ? 0.024 : 0.028);
+    if (model === 'watch') { drawWatchBezel(context, x, y, width, height, radius, extra); return; }
+    if (model === 'iphone-duo') {
+        const e = extra || {};
+        drawDuoBezel(context, x, y, width, height, radius, { finish: e.duoFinish, variant: e.duoVariant });
+        return;
+    }
+    // iPad bezels are uniform and a touch thinner than iPhone.
+    const bw = width * (isIpad ? 0.024 : 0.028);
     context.save();
     // Main dark bezel ring
     context.lineWidth = bw;
-    context.strokeStyle = isSamsung ? '#0b0b0d' : isIpad ? '#161618' : '#1d1d1f';
+    context.strokeStyle = isIpad ? '#161618' : '#1d1d1f';
     context.beginPath();
     context.roundRect(x - bw / 2, y - bw / 2, width + bw, height + bw, radius + bw / 2);
     context.stroke();
     // Subtle metallic outer edge
     context.lineWidth = Math.max(1, bw * (isIpad ? 0.16 : 0.14));
-    context.strokeStyle = isSamsung ? 'rgba(255,255,255,0.08)' : isIpad ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.20)';
+    context.strokeStyle = isIpad ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.20)';
     context.beginPath();
     context.roundRect(x - bw, y - bw, width + bw * 2, height + bw * 2, radius + bw);
     context.stroke();
+    context.restore();
+}
+
+// iPhone Duo titanium finishes (Apple's two launch colours). `hi` / `mid` /
+// `lo` are the stops of the diagonal gradient across the frame, `edge` the
+// catch-light on the outer rim, `seam` the hairline where the hinge cover and
+// the button cut-outs meet the frame.
+const DUO_FINISHES = {
+    'night-sky':  { hi: '#555c6b', mid: '#2e333d', lo: '#1b1e25', edge: 'rgba(200,215,240,0.30)', seam: 'rgba(0,0,0,0.55)' },
+    'star-white': { hi: '#f8f6f2', mid: '#dcd7cf', lo: '#b5aea4', edge: 'rgba(255,255,255,0.75)', seam: 'rgba(60,52,44,0.35)' }
+};
+
+// Shared: draw an iPhone Duo around the screen.
+//
+// Proportions come from Apple's published tech specs. Outer (folded, front):
+// an 84.1 × 117.8 mm body around a 5.36" 1398×2034 panel at 460 ppi
+// (77.2 × 112.3 mm), so 0.045 W of border at the sides and 0.036 W top and
+// bottom, the book hinge forming the left edge. Inner (unfolded): 164.6 ×
+// 117.8 mm around a 7.58" 1878×2670 panel at 430 ppi (157.7 × 110.9 mm) — a
+// uniform ~3.4 mm (0.031 W) border — presented in portrait like the App Store
+// screenshots, so the hinge and the crease run ACROSS the middle.
+// Everything is a ring around the screen rect, which is never painted over
+// except for the crease's faint sheen: the screenshot is already drawn.
+//
+// `opts` = { finish: keyof DUO_FINISHES, variant: 'inner' | 'outer' }.
+function drawDuoBezel(context, x, y, width, height, radius, opts) {
+    const o = opts || {};
+    const FIN = DUO_FINISHES[o.finish] || DUO_FINISHES['night-sky'];
+    const inner = o.variant !== 'outer';
+    const W = width, H = height;
+
+    // ---- Geometry ----
+    const side = (inner ? 0.031 : 0.0448) * W;      // screen edge → body edge
+    const topB = (inner ? 0.031 : 0.0356) * W;
+    const metal = (inner ? 0.0105 : 0.0150) * W;    // visible titanium band
+    const bodyX = x - side, bodyY = y - topB;
+    const bodyW = W + side * 2, bodyH = H + topB * 2;
+    // The body rounds a little more than the glass inside it, and never less
+    // than the case of a real Duo does, whatever the user dials the screen to.
+    const bodyR = Math.max(radius + side * 0.9, (inner ? 0.055 : 0.14) * W);
+    const glassX = bodyX + metal, glassY = bodyY + metal;
+    const glassW = bodyW - metal * 2, glassH = bodyH - metal * 2;
+    const glassR = Math.max(radius + (side - metal) * 0.8, bodyR - metal);
+
+    const rr = (rx, ry, rw, rh, r) => {
+        const rad = Math.max(0, Math.min(r, rw / 2, rh / 2));
+        context.moveTo(rx + rad, ry);
+        context.arcTo(rx + rw, ry, rx + rw, ry + rh, rad);
+        context.arcTo(rx + rw, ry + rh, rx, ry + rh, rad);
+        context.arcTo(rx, ry + rh, rx, ry, rad);
+        context.arcTo(rx, ry, rx + rw, ry, rad);
+        context.closePath();
+    };
+
+    const ti = context.createLinearGradient(bodyX, bodyY, bodyX + bodyW, bodyY + bodyH);
+    ti.addColorStop(0, FIN.hi);
+    ti.addColorStop(0.5, FIN.mid);
+    ti.addColorStop(1, FIN.lo);
+
+    context.save();
+
+    // ---- 1) Buttons on the right edge, under the frame so it rounds over them ----
+    // Volume up/down, the side button (Touch ID) and Camera Control. On the
+    // folded Duo they sit on the free (non-hinge) edge; unfolded and turned to
+    // portrait, the same edge is the right-hand one of the top half.
+    const out = W * (inner ? 0.0045 : 0.0065);
+    const btn = (by, bh) => {
+        context.beginPath();
+        rr(bodyX + bodyW - out * 2, by, out * 3, bh, out * 1.2);
+        context.fill();
+    };
+    context.fillStyle = ti;
+    const unit = inner ? H * 0.5 : H;               // the half that carries them
+    btn(bodyY + unit * 0.16, unit * 0.075);
+    btn(bodyY + unit * 0.255, unit * 0.075);
+    btn(bodyY + unit * 0.39, unit * 0.11);
+    if (!inner) btn(bodyY + unit * 0.66, unit * 0.06);
+
+    // ---- 2) Titanium frame: even-odd ring, glass punched out ----
+    context.fillStyle = ti;
+    context.beginPath();
+    rr(bodyX, bodyY, bodyW, bodyH, bodyR);
+    rr(glassX, glassY, glassW, glassH, glassR);
+    context.fill('evenodd');
+
+    // ---- 3) Black glass between the frame and the active pixels ----
+    context.fillStyle = '#050506';
+    context.beginPath();
+    rr(glassX, glassY, glassW, glassH, glassR);
+    rr(x, y, W, H, radius);
+    context.fill('evenodd');
+
+    // ---- 4) Hinge ----
+    context.strokeStyle = FIN.seam;
+    context.lineWidth = Math.max(0.75, W * 0.0018);
+    if (inner) {
+        // The two halves meet across the middle: the frame shows a hairline gap
+        // on both edges, with the hinge cover peeking out between them.
+        const my = y + H / 2;
+        const gap = Math.max(1, W * 0.004);
+        [bodyX, bodyX + bodyW - metal].forEach((ex) => {
+            context.fillStyle = FIN.seam;
+            context.fillRect(ex, my - gap / 2, metal, gap);
+        });
+        // Crease: a barely-there sheen across the panel, light above the fold
+        // line and shadow below, the way the folded glass catches the light.
+        context.save();
+        context.beginPath();
+        context.roundRect(x, y, W, H, radius);
+        context.clip();
+        const ch = H * 0.018;
+        const crease = context.createLinearGradient(0, my - ch, 0, my + ch);
+        crease.addColorStop(0, 'rgba(255,255,255,0)');
+        crease.addColorStop(0.42, 'rgba(255,255,255,0.07)');
+        crease.addColorStop(0.5, 'rgba(0,0,0,0.06)');
+        crease.addColorStop(0.62, 'rgba(0,0,0,0.035)');
+        crease.addColorStop(1, 'rgba(0,0,0,0)');
+        context.fillStyle = crease;
+        context.fillRect(x, my - ch, W, ch * 2);
+        context.restore();
+    } else {
+        // Folded, the hinge is the left edge: its cover reads as a separate
+        // band of the frame, set off by a seam just inside the rim.
+        const hx = bodyX + metal * 0.62;
+        context.beginPath();
+        context.moveTo(hx, bodyY + bodyR * 0.9);
+        context.lineTo(hx, bodyY + bodyH - bodyR * 0.9);
+        context.stroke();
+    }
+
+    // ---- 5) Catch-light on the outer rim ----
+    context.strokeStyle = FIN.edge;
+    context.lineWidth = Math.max(0.75, metal * 0.16);
+    context.beginPath();
+    rr(bodyX + context.lineWidth / 2, bodyY + context.lineWidth / 2,
+       bodyW - context.lineWidth, bodyH - context.lineWidth, bodyR - context.lineWidth / 2);
+    context.stroke();
+
     context.restore();
 }
 
@@ -11579,12 +11901,97 @@ function getExportSurface() {
 }
 
 // Render one screenshot at full output resolution, off-screen, and return its
-// PNG panels (more than one only for panoramas).
-function renderScreenshotPanels(index) {
+// PNG panels (more than one only for panoramas). App Store creative assets
+// (header / search results) must carry no alpha channel at all, and a canvas
+// PNG is always RGBA even when fully opaque — those are re-encoded as RGB.
+async function renderScreenshotPanels(index) {
     const { canvas: c, ctx: cx } = getExportSurface();
     const dims = getCanvasDimensions(index);
     renderScreenshotToCanvas(index, c, cx, dims, 1);
+    if (isCreativeOutput()) return [await canvasToOpaquePngDataUrl(c)];
     return sliceCanvasToPanels(c, dims.span || 1);
+}
+
+// Base name of exported files: App Store creative assets are named after
+// their placement so a ZIP of headers isn't mistaken for a screenshot set.
+function exportFileStem() {
+    switch (state.outputDevice) {
+        case 'creative-header': return 'header';
+        case 'creative-search': return 'search-results';
+        case 'creative-universal': return 'header-search-universal';
+        default: return 'screenshot';
+    }
+}
+
+// CRC-32 (PNG chunk checksums), table built on first use.
+let _crcTable = null;
+function crc32(bytes) {
+    if (!_crcTable) {
+        _crcTable = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+            let c = n;
+            for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+            _crcTable[n] = c >>> 0;
+        }
+    }
+    let c = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) c = _crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+}
+
+// Encode a canvas as an 8-bit RGB PNG (colour type 2 — no alpha channel),
+// compositing any translucent pixel over black. Rows use the Up filter, which
+// suits the smooth gradients these assets are made of; zlib comes from the
+// browser's CompressionStream. Falls back to the canvas's own (RGBA) PNG where
+// CompressionStream is missing.
+async function canvasToOpaquePngDataUrl(canvas) {
+    if (typeof CompressionStream === 'undefined') return canvas.toDataURL('image/png');
+    const w = canvas.width, h = canvas.height;
+    const src = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    const stride = w * 3 + 1;
+    const raw = new Uint8Array(stride * h);
+    const prev = new Uint8Array(w * 3);
+    const row = new Uint8Array(w * 3);
+    for (let y = 0; y < h; y++) {
+        for (let x = 0, i = y * w * 4, j = 0; x < w; x++, i += 4, j += 3) {
+            const a = src[i + 3];
+            row[j] = a === 255 ? src[i] : (src[i] * a / 255) | 0;
+            row[j + 1] = a === 255 ? src[i + 1] : (src[i + 1] * a / 255) | 0;
+            row[j + 2] = a === 255 ? src[i + 2] : (src[i + 2] * a / 255) | 0;
+        }
+        const o = y * stride;
+        raw[o] = y === 0 ? 0 : 2;
+        for (let j = 0; j < row.length; j++) raw[o + 1 + j] = y === 0 ? row[j] : (row[j] - prev[j]) & 0xff;
+        prev.set(row);
+    }
+    const idat = new Uint8Array(await new Response(
+        new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'))
+    ).arrayBuffer());
+
+    const chunk = (type, data) => {
+        const out = new Uint8Array(12 + data.length);
+        const dv = new DataView(out.buffer);
+        dv.setUint32(0, data.length);
+        for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+        out.set(data, 8);
+        dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+        return out;
+    };
+    const ihdr = new Uint8Array(13);
+    const hv = new DataView(ihdr.buffer);
+    hv.setUint32(0, w);
+    hv.setUint32(4, h);
+    ihdr.set([8, 2, 0, 0, 0], 8);   // 8-bit, RGB, deflate, adaptive filtering, no interlace
+    const png = new Blob([
+        new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+        chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', new Uint8Array(0))
+    ], { type: 'image/png' });
+    return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(png);
+    });
 }
 
 // Let the browser paint the progress modal between frames. A plain setTimeout(0)
@@ -11650,12 +12057,12 @@ async function exportCurrent() {
     // Make sure the current language's images are decoded (lazy loading), then render.
     await ensureLanguageImagesLoaded(state.currentLanguage);
 
-    const panels = renderScreenshotPanels(state.selectedIndex);
+    const panels = await renderScreenshotPanels(state.selectedIndex);
     panels.forEach((url, k) => {
         const link = document.createElement('a');
         link.download = panels.length > 1
             ? `screenshot-${state.selectedIndex + 1}-panel-${k + 1}.png`
-            : `screenshot-${state.selectedIndex + 1}.png`;
+            : `${exportFileStem()}-${state.selectedIndex + 1}.png`;
         link.href = url;
         link.click();
     });
@@ -11740,10 +12147,10 @@ async function exportAllForLanguage(lang) {
         await yieldToUI();
 
         // Rendered off-screen: the visible preview and its neighbours are left alone.
-        const panels = renderScreenshotPanels(i);
+        const panels = await renderScreenshotPanels(i);
         panels.forEach((dataUrl) => {
             const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
-            zip.file(`screenshot-${pad(panelNum++)}.png`, base64Data, { base64: true });
+            zip.file(`${exportFileStem()}-${pad(panelNum++)}.png`, base64Data, { base64: true });
         });
     }
 
@@ -11813,11 +12220,11 @@ async function exportAllLanguages() {
             await yieldToUI();
 
             // Rendered off-screen: the visible preview and its neighbours are left alone.
-            const panels = renderScreenshotPanels(i);
+            const panels = await renderScreenshotPanels(i);
             panels.forEach((dataUrl) => {
                 const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
                 // Use language code as folder name
-                zip.file(`${lang}/screenshot-${panelNum++}.png`, base64Data, { base64: true });
+                zip.file(`${lang}/${exportFileStem()}-${panelNum++}.png`, base64Data, { base64: true });
             });
         }
     }

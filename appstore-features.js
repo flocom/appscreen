@@ -44,11 +44,7 @@ function assignImageFileToLanguage(file, lang) {
         reader.onload = (e) => {
             const img = new Image();
             img.onload = () => {
-                const ratio = Math.min(img.width, img.height) / Math.max(img.width, img.height);
-                // Watch panels are tiny (largest 422x514) and their ratio
-                // overlaps the iPad's — check size before ratio.
-                const deviceType = Math.max(img.width, img.height) <= 560 ? 'Apple Watch'
-                    : ratio > 0.6 ? 'iPad' : 'iPhone';
+                const deviceType = detectImageDeviceType(img.width, img.height);
                 const idx = findScreenshotByBaseFilename(file.name);
                 if (idx !== -1) {
                     addLocalizedImage(idx, lang, img, e.target.result, file.name);
@@ -563,6 +559,7 @@ if (typeof updateCanvas === 'function') {
         _origUpdateCanvas.apply(this, arguments);
         scheduleAlvRender();
         try { updateSpanGuides(); } catch (e) {}
+        scheduleCreativeGuides();
     };
 }
 
@@ -597,6 +594,101 @@ function updateSpanGuides() {
     }
 }
 
+// ---- App Store creative asset guides (header / search results) ----------
+// Where the App Store crops these assets, as fractions of the canvas. Apple
+// publishes only the canvas sizes; the safe areas are the ones drawn in its
+// templates (header: a centred 1646×661 on 3840×1646; search results: a
+// centred 2168×1030 on 3840×2560). The 16:9 universal asset is centre-cropped
+// to 21:9 for the header and to 3:2 for search results, so its guides are
+// those two crops with each placement's safe area mapped into them — keep the
+// key artwork and all text inside the overlap of the two.
+const CREATIVE_GUIDES = (() => {
+    const centred = (w, h, W, H, label, kind) => ({ label, kind, x: (1 - w / W) / 2, y: (1 - h / H) / 2, w: w / W, h: h / H });
+    const U = { W: 5244, H: 2950 };
+    const hdr = { w: U.W, h: U.W * 9 / 21 };        // 21:9 crop, full width
+    const srch = { w: U.H * 3 / 2, h: U.H };        // 3:2 crop, full height
+    const hs = hdr.w / 3840, ss = srch.w / 3840;    // template → crop scale
+    return {
+        'creative-header': [centred(1646, 661, 3840, 1646, 'Safe area', 'safe')],
+        'creative-search': [centred(2168, 1030, 3840, 2560, 'Safe area', 'safe')],
+        'creative-universal': [
+            centred(hdr.w, hdr.h, U.W, U.H, 'Header crop 21:9', 'header-crop'),
+            centred(srch.w, srch.h, U.W, U.H, 'Search crop 3:2', 'search-crop'),
+            centred(1646 * hs, 661 * hs, U.W, U.H, 'Header safe area', 'header-safe'),
+            centred(2168 * ss, 1030 * ss, U.W, U.H, 'Search safe area', 'search-safe')
+        ]
+    };
+})();
+
+// updateCanvas() only schedules the render (one per animation frame), and the
+// canvas takes its new display size when that render runs — measure after it.
+let _creativeGuidesFrame = 0;
+function scheduleCreativeGuides() {
+    if (_creativeGuidesFrame) return;
+    _creativeGuidesFrame = requestAnimationFrame(() => requestAnimationFrame(() => {
+        _creativeGuidesFrame = 0;
+        try { updateCreativeGuides(); } catch (e) {}
+    }));
+}
+
+function creativeGuidesEnabled() {
+    try { return localStorage.getItem('creativeGuides') !== '0'; } catch (e) { return true; }
+}
+
+// DOM overlay like the panorama guides, so it can never end up in an export.
+function updateCreativeGuides() {
+    const toggle = document.getElementById('creative-guides-toggle');
+    const wrapper = document.getElementById('canvas-wrapper');
+    const canvasEl = document.getElementById('preview-canvas');
+    if (!wrapper || !canvasEl || typeof state === 'undefined') return;
+    const guides = CREATIVE_GUIDES[state.outputDevice];
+    if (toggle) {
+        toggle.style.display = guides ? 'flex' : 'none';
+        toggle.classList.toggle('active', creativeGuidesEnabled());
+    }
+    let overlay = document.getElementById('creative-guides');
+    if (!guides || !creativeGuidesEnabled()) { if (overlay) overlay.style.display = 'none'; return; }
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'creative-guides';
+        overlay.style.cssText = 'position:absolute;pointer-events:none;z-index:6;overflow:hidden;';
+        if (getComputedStyle(wrapper).position === 'static') wrapper.style.position = 'relative';
+        wrapper.appendChild(overlay);
+    }
+    const w = canvasEl.offsetWidth, h = canvasEl.offsetHeight;
+    overlay.style.display = 'block';
+    overlay.style.left = canvasEl.offsetLeft + 'px';
+    overlay.style.top = canvasEl.offsetTop + 'px';
+    overlay.style.width = w + 'px';
+    overlay.style.height = h + 'px';
+    const STYLE = {
+        'safe': 'border:2px solid rgba(255,255,255,0.9);box-shadow:0 0 0 9999px rgba(0,0,0,0.32);',
+        'header-crop': 'border:2px dashed rgba(79,195,247,0.95);',
+        'search-crop': 'border:2px dashed rgba(255,183,77,0.95);',
+        'header-safe': 'border:2px solid rgba(79,195,247,0.95);',
+        'search-safe': 'border:2px solid rgba(255,183,77,0.95);'
+    };
+    overlay.innerHTML = guides.map((g, i) => {
+        // Stagger the labels of nested boxes so they don't sit on each other:
+        // header boxes label their top-left corner, search boxes the opposite one.
+        const labelTop = g.kind === 'search-crop' ? 'left:auto;right:4px;'
+            : g.kind === 'search-safe' ? 'left:auto;right:4px;top:auto;bottom:3px;' : '';
+        return `<div class="creative-guide-box" style="left:${(g.x * w).toFixed(1)}px;top:${(g.y * h).toFixed(1)}px;` +
+            `width:${(g.w * w).toFixed(1)}px;height:${(g.h * h).toFixed(1)}px;${STYLE[g.kind] || ''}">` +
+            `<span class="creative-guide-label" style="${labelTop}">${g.label}</span></div>`;
+    }).join('');
+}
+
+function initCreativeGuidesToggle() {
+    const toggle = document.getElementById('creative-guides-toggle');
+    if (!toggle) return;
+    toggle.addEventListener('click', () => {
+        try { localStorage.setItem('creativeGuides', creativeGuidesEnabled() ? '0' : '1'); } catch (e) { /* private mode */ }
+        updateCreativeGuides();
+    });
+    window.addEventListener('resize', scheduleCreativeGuides);
+}
+
 function initCanvasViewToggle() {
     document.querySelectorAll('#canvas-view-toggle button').forEach(btn => {
         btn.addEventListener('click', () => setCanvasView(btn.dataset.view));
@@ -612,53 +704,121 @@ function initCanvasViewToggle() {
 // iPad corners are far subtler than a phone's (~2-3% of width), so a low value
 // here is what makes the mockup actually read as an iPad rather than a big phone.
 // The Apple Watch is the opposite extreme: its display corners measure 0.26 of
-// the screen width on Apple's own bezel artwork, hence 104.
-const DEVICE_2D_RADIUS = { iphone: 52, samsung: 34, ipad: 12, mac: 16, watch: 104 };
+// the screen width on Apple's own bezel artwork, hence 104. The iPhone Duo has
+// one of each: a phone-like cover screen (outer, 'iphone-duo') and a much
+// squarer inner screen ('iphone-duo-inner') — see deviceModelRadius().
+const DEVICE_2D_RADIUS = { iphone: 52, 'iphone-duo': 44, 'iphone-duo-inner': 26, ipad: 12, mac: 16, watch: 104 };
+
+// The output size each Device Model button switches the canvas to.
+const DEVICE_MODEL_DEFAULT_SIZE = {
+    iphone: 'iphone-6.9',
+    'iphone-duo': typeof DEFAULT_DUO_DEVICE !== 'undefined' ? DEFAULT_DUO_DEVICE : 'iphone-duo-inner',
+    ipad: 'ipad-13',
+    mac: 'mac-2880',
+    watch: typeof DEFAULT_WATCH_DEVICE !== 'undefined' ? DEFAULT_WATCH_DEVICE : 'watch-46'
+};
+
+// Point the project at another output size and bring everything that follows
+// the canvas along: text sizes across the watch boundary, every screen's
+// device model, the 3D variant, the output-size menu.
+function switchOutputDevice(nextKey) {
+    if (typeof state === 'undefined' || state.outputDevice === nextKey) return;
+    const prevDevice = state.outputDevice;
+    state.outputDevice = nextKey;
+    if (typeof rescaleTextForOutput === 'function') rescaleTextForOutput(prevDevice, nextKey);
+    if (typeof adaptDeviceModelToOutput === 'function') adaptDeviceModelToOutput(prevDevice, nextKey);
+    if (typeof syncUIWithState === 'function') syncUIWithState();
+}
+
+// Show the rows that only make sense for one device model.
+function syncModelOptionRows(model2d, ss) {
+    const use3D = !!(ss && ss.use3D);
+    const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? 'block' : 'none'; };
+    show('mac-finish-row', model2d === 'mac' && !use3D);
+    show('watch-finish-row', model2d === 'watch' && !use3D);
+    // The Duo display choice drives the 3D model too, so it stays up in 3D;
+    // the finish is the 2D shell's (3D has its own frame colour swatches).
+    const duo = use3D ? (ss && ss.device3D === 'iphone-duo') : model2d === 'iphone-duo';
+    show('duo-options-row', duo);
+    show('duo-finish-row', duo && !use3D);
+    const variant = typeof duoDisplayVariant === 'function' ? duoDisplayVariant(ss) : 'inner';
+    document.querySelectorAll('#duo-display-selector button').forEach(b => b.classList.toggle('active', b.dataset.duodisplay === variant));
+    const finish = (ss && ss.deviceDuoFinish) || 'night-sky';
+    document.querySelectorAll('#duo-finish-selector button').forEach(b => b.classList.toggle('active', b.dataset.duofinish === finish));
+}
 
 function initDeviceTextExtras() {
-    // 2D Device Model (iPhone / Samsung) — auto-adapts corner radius + notch.
+    // 2D Device Model — auto-adapts corner radius + notch, and moves the canvas
+    // to that device's App Store size.
     document.querySelectorAll('#device-model-2d-selector button').forEach(btn => {
         btn.addEventListener('click', () => {
             const model = btn.dataset.model2d;
             document.querySelectorAll('#device-model-2d-selector button').forEach(b => b.classList.toggle('active', b === btn));
             setScreenshotSetting('deviceModel2D', model);
-            // Adapt corner radius to the model
-            const r = DEVICE_2D_RADIUS[model] ?? 24;
+            // Switch the output canvas to this device class's dimensions, unless the
+            // current size already belongs to it (don't clobber a deliberate
+            // sub-size) or the canvas is a landscape marketing asset — a header,
+            // a web banner, a custom size — which frames any device as it is.
+            // Every size key is prefixed with its class for exactly this test —
+            // an unprefixed key would fall through and reset the canvas back to
+            // an iPhone the moment any model button is clicked.
+            if (typeof state !== 'undefined' && typeof outputSizeFamily === 'function'
+                && outputSizeFamily() !== model && !outputHostsAnyDevice()) {
+                switchOutputDevice(DEVICE_MODEL_DEFAULT_SIZE[model] || 'iphone-6.9');
+            }
+            // Adapt corner radius + notch to the model (and, for the Duo, to
+            // the display it now draws — known only once the canvas is settled).
+            const ss = typeof getScreenshotSettings === 'function' ? getScreenshotSettings() : null;
+            const variant = typeof duoDisplayVariant === 'function' ? duoDisplayVariant(ss) : 'inner';
+            const r = typeof deviceModelRadius === 'function' ? deviceModelRadius(model, 24, variant) : (DEVICE_2D_RADIUS[model] ?? 24);
             setScreenshotSetting('cornerRadius', r);
             const slider = document.getElementById('corner-radius');
             const val = document.getElementById('corner-radius-value');
             if (slider) slider.value = r;
             if (val) val.textContent = r + 'px';
-            // Sensible default notch for the model (iPads, Macs and Watches have none).
-            const defNotch = model === 'ipad' || model === 'mac' || model === 'watch' ? 'none' : model === 'samsung' ? 'punch' : 'island';
+            const defNotch = typeof defaultNotchFor === 'function' ? defaultNotchFor(model, variant) : 'island';
             setScreenshotSetting('frame.notch', defNotch);
             document.querySelectorAll('#notch-selector button').forEach(b => b.classList.toggle('active', b.dataset.notch === defNotch));
-            // Switch the output canvas to this device class's dimensions, unless the
-            // current size already matches (don't clobber a deliberate sub-size).
-            // Every size key is prefixed with its class for exactly this test —
-            // an unprefixed watch key would fall through and reset the canvas
-            // back to an iPhone the moment any model button is clicked.
-            const classPrefix = model === 'ipad' ? 'ipad' : model === 'samsung' ? 'android' : model === 'mac' ? 'mac' : model === 'watch' ? 'watch' : 'iphone';
-            const defaultSize = model === 'ipad' ? 'ipad-13' : model === 'samsung' ? 'android-phone-hd' : model === 'mac' ? 'mac-2880' : model === 'watch' ? (typeof DEFAULT_WATCH_DEVICE !== 'undefined' ? DEFAULT_WATCH_DEVICE : 'watch-46') : 'iphone-6.9';
-            if (typeof state !== 'undefined' && !(state.outputDevice || '').startsWith(classPrefix)) {
-                const prevDevice = state.outputDevice;
-                state.outputDevice = defaultSize;
-                // Crossing the watch boundary changes the canvas for the WHOLE
-                // project, so the absolute text sizes and every other screen's
-                // device model have to come with it — not just this screen's,
-                // which setScreenshotSetting above has already handled.
-                if (typeof rescaleTextForOutput === 'function') rescaleTextForOutput(prevDevice, defaultSize);
-                if (typeof isWatchOutput === 'function' && isWatchOutput(defaultSize) !== isWatchOutput(prevDevice)) {
-                    if (isWatchOutput(defaultSize)) adoptWatchDeviceModel();
-                    else dropWatchDeviceModel(defaultSize);
+            syncModelOptionRows(model, getScreenshotSettings());
+            updateCanvas();
+        });
+    });
+
+    // iPhone Duo display (inner 7.6" / outer 5.4"). On a Duo canvas the two
+    // displays are two output sizes, so this moves the canvas; anywhere else
+    // it is the screen's own setting.
+    document.querySelectorAll('#duo-display-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const variant = btn.dataset.duodisplay === 'outer' ? 'outer' : 'inner';
+            if (typeof isDuoOutput === 'function' && isDuoOutput()) {
+                switchOutputDevice(variant === 'outer' ? 'iphone-duo-outer' : 'iphone-duo-inner');
+            } else {
+                const ss = getScreenshotSettings();
+                const prevNotch = (ss.frame && ss.frame.notch) || 'none';
+                setScreenshotSetting('deviceDuoDisplay', variant);
+                if (ss.deviceModel2D === 'iphone-duo') {
+                    const r = deviceModelRadius('iphone-duo', 44, variant);
+                    setScreenshotSetting('cornerRadius', r);
+                    const slider = document.getElementById('corner-radius');
+                    const val = document.getElementById('corner-radius-value');
+                    if (slider) slider.value = r;
+                    if (val) val.textContent = r + 'px';
+                    if (prevNotch === 'none' || prevNotch === 'island') {
+                        setScreenshotSetting('frame.notch', defaultNotchFor('iphone-duo', variant));
+                    }
                 }
-                if (typeof syncUIWithState === 'function') syncUIWithState();
+                if (typeof refresh3DDeviceVariant === 'function') refresh3DDeviceVariant();
+                if (typeof syncDeviceTextExtras === 'function') syncDeviceTextExtras();
             }
-            // The finish selectors are each only relevant for their own model.
-            const finishRow = document.getElementById('mac-finish-row');
-            if (finishRow) finishRow.style.display = model === 'mac' ? 'block' : 'none';
-            const watchFinishRow = document.getElementById('watch-finish-row');
-            if (watchFinishRow) watchFinishRow.style.display = model === 'watch' ? 'block' : 'none';
+            updateCanvas();
+        });
+    });
+
+    // iPhone Duo titanium finish — 2D shell only.
+    document.querySelectorAll('#duo-finish-selector button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#duo-finish-selector button').forEach(b => b.classList.toggle('active', b === btn));
+            setScreenshotSetting('deviceDuoFinish', btn.dataset.duofinish);
             updateCanvas();
         });
     });
@@ -765,12 +925,9 @@ function syncDeviceTextExtras() {
         document.querySelectorAll('#device-model-2d-selector button').forEach(b => b.classList.toggle('active', b.dataset.model2d === model2d));
         const macFinish = ss.deviceMacFinish || 'silver';
         document.querySelectorAll('#mac-finish-selector button').forEach(b => b.classList.toggle('active', b.dataset.macfinish === macFinish));
-        const finishRow = document.getElementById('mac-finish-row');
-        if (finishRow) finishRow.style.display = (model2d === 'mac' && !ss.use3D) ? 'block' : 'none';
         const watchFinish = ss.deviceWatchFinish || 'midnight';
         document.querySelectorAll('#watch-finish-selector button').forEach(b => b.classList.toggle('active', b.dataset.watchfinish === watchFinish));
-        const watchFinishRow = document.getElementById('watch-finish-row');
-        if (watchFinishRow) watchFinishRow.style.display = (model2d === 'watch' && !ss.use3D) ? 'block' : 'none';
+        syncModelOptionRows(model2d, ss);
         const bezelToggle = document.getElementById('bezel-toggle');
         if (bezelToggle) bezelToggle.classList.toggle('active', !!ss.bezelEnabled);
         const span = ss.spanScreens || 1;
@@ -779,9 +936,12 @@ function syncDeviceTextExtras() {
         if (spanHint) spanHint.style.display = span > 1 ? 'block' : 'none';
         // The App Store takes no panoramic Apple Watch screenshots, and a
         // 3-slot watch panorama is only 1248px wide in total — hide the control
-        // rather than offer something that can't be shipped.
+        // rather than offer something that can't be shipped. A header or a
+        // search results asset is a single image, never a row of slots.
         const spanGroup = document.getElementById('span-screens-group');
-        if (spanGroup) spanGroup.style.display = (typeof isWatchOutput === 'function' && isWatchOutput()) ? 'none' : 'block';
+        const noSpan = (typeof isWatchOutput === 'function' && isWatchOutput())
+            || (typeof isCreativeOutput === 'function' && isCreativeOutput());
+        if (spanGroup) spanGroup.style.display = noSpan ? 'none' : 'block';
         // In 3D, the notch still applies (baked into the texture) but the bezel/model
         // selectors are 2D-only; keep the Notch sub-control visible, hide the rest.
         const group = document.getElementById('device-model-2d-group');
@@ -1101,6 +1261,7 @@ function initCopyLayoutModal() {
 function initAllExtras() {
     initAppStoreFeatures();
     initCanvasViewToggle();
+    initCreativeGuidesToggle();
     initDeviceTextExtras();
     initDeleteShortcut();
     initCopyDesignButton();

@@ -672,6 +672,7 @@ function defaultSettings() {
     screenshot: {
       scale: 70, y: 60, x: 50, rotation: 0, perspective: 0, cornerRadius: 24,
       deviceModel2D: "iphone", deviceMacFinish: "silver", deviceWatchFinish: "midnight",
+      deviceDuoFinish: "night-sky", deviceDuoDisplay: "inner",
       bezelEnabled: false, spanScreens: 1,
       use3D: false, device3D: "iphone", rotation3D: { x: 0, y: 0, z: 0 },
       shadow: { enabled: true, color: "#000000", blur: 40, opacity: 30, x: 0, y: 20 },

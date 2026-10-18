@@ -374,7 +374,10 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
       annotations: { readOnlyHint: true },
       title: "List output sizes",
       description:
-        "List all supported App Store / Play Store / web output sizes (device key → pixel dimensions).",
+        "List all supported App Store / web output sizes (device key → pixel dimensions). " +
+        "iphone-duo-inner/outer are the two iPhone Duo screenshot slots; creative-header (21:9), " +
+        "creative-search (3:2) and creative-universal (16:9, usable for both) are the iOS 27 App Store " +
+        "product page header and search results assets — single images, no alpha.",
       inputSchema: {},
     },
     async () => ({
@@ -877,8 +880,10 @@ function buildServer(ctx: ServerCtx = {}): McpServer {
         "Objects merge (only the fields you pass change); arrays and scalars replace. Use `all:true` to " +
         "patch every screenshot. Sections & example fields:\n" +
         "- screenshot (device placement): scale, x, y, rotation, perspective, cornerRadius, deviceModel2D " +
-        "('iphone'|'ipad'|'samsung'|'mac'|'watch'), deviceMacFinish ('silver'|'space-black'), deviceWatchFinish ('midnight'|'starlight'|'silver'|'gold'), bezelEnabled, spanScreens, use3D, device3D, rotation3D{x,y,z}, " +
-        "shadow{enabled,color,blur,opacity,x,y}, frame{enabled,color,width,opacity,notch}\n" +
+        "('iphone'|'iphone-duo'|'ipad'|'mac'|'watch'), deviceMacFinish ('silver'|'space-black'), deviceWatchFinish ('midnight'|'starlight'|'silver'|'gold'), " +
+        "deviceDuoFinish ('night-sky'|'star-white'), deviceDuoDisplay ('inner'|'outer' — only used off an iPhone Duo canvas; on iphone-duo-inner/outer the output size decides), " +
+        "bezelEnabled, spanScreens, use3D, device3D ('iphone'|'iphone-duo'), rotation3D{x,y,z}, " +
+        "shadow{enabled,color,blur,opacity,x,y}, frame{enabled,color,width,opacity,notch ('none'|'island'|'notch')}\n" +
         "- text (styling/layout): headlineEnabled, headlineFont, headlineSize, headlineWeight, headlineColor, " +
         "headlineItalic/Underline/Strikethrough, headlineBgColor, headlineBgOpacity, position ('top'|'bottom'), " +
         "offsetY, lineHeight, subheadline* equivalents, subheadlineSpacing, subheadlineOpacity, perScreenText, " +
