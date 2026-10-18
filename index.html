@@ -252,6 +252,15 @@
                                     <span class="device-option-size">1242 × 2208</span>
                                 </div>
                                 <div class="output-size-divider"></div>
+                                <div class="device-option" data-device="iphone-duo-inner">
+                                    <span class="device-option-name">iPhone Duo · inner 7.6"</span>
+                                    <span class="device-option-size">2007 × 2853</span>
+                                </div>
+                                <div class="device-option" data-device="iphone-duo-outer">
+                                    <span class="device-option-name">iPhone Duo · outer 5.4"</span>
+                                    <span class="device-option-size">1398 × 2034</span>
+                                </div>
+                                <div class="output-size-divider"></div>
                                 <div class="device-option" data-device="ipad-13">
                                     <span class="device-option-name">iPad 13"</span>
                                     <span class="device-option-size">2064 × 2752</span>
@@ -307,21 +316,17 @@
                                     <span class="device-option-size">1280 × 800</span>
                                 </div>
                                 <div class="output-size-divider"></div>
-                                <div class="device-option" data-device="android-phone">
-                                    <span class="device-option-name">Android Phone</span>
-                                    <span class="device-option-size">1080 × 1920</span>
+                                <div class="device-option" data-device="creative-header">
+                                    <span class="device-option-name">Product Page Header 21:9</span>
+                                    <span class="device-option-size">3840 × 1646</span>
                                 </div>
-                                <div class="device-option" data-device="android-phone-hd">
-                                    <span class="device-option-name">Android Phone HD</span>
-                                    <span class="device-option-size">1440 × 2560</span>
+                                <div class="device-option" data-device="creative-search">
+                                    <span class="device-option-name">Search Results 3:2</span>
+                                    <span class="device-option-size">3840 × 2560</span>
                                 </div>
-                                <div class="device-option" data-device="android-tablet-7">
-                                    <span class="device-option-name">Android Tablet 7"</span>
-                                    <span class="device-option-size">1200 × 1920</span>
-                                </div>
-                                <div class="device-option" data-device="android-tablet-10">
-                                    <span class="device-option-name">Android Tablet 10"</span>
-                                    <span class="device-option-size">1600 × 2560</span>
+                                <div class="device-option" data-device="creative-universal">
+                                    <span class="device-option-name">Header + Search 16:9</span>
+                                    <span class="device-option-size">5244 × 2950</span>
                                 </div>
                                 <div class="output-size-divider"></div>
                                 <div class="device-option" data-device="web-og">
@@ -335,10 +340,6 @@
                                 <div class="device-option" data-device="web-hero">
                                     <span class="device-option-name">Website Hero</span>
                                     <span class="device-option-size">1920 × 1080</span>
-                                </div>
-                                <div class="device-option" data-device="web-feature">
-                                    <span class="device-option-name">Feature Graphic</span>
-                                    <span class="device-option-size">1024 × 500</span>
                                 </div>
                                 <div class="output-size-divider"></div>
                                 <div class="device-option" data-device="custom">
@@ -386,6 +387,12 @@
                 <button data-view="single" class="active">Single</button>
                 <button data-view="all-languages">All languages</button>
             </div>
+            <button class="creative-guides-toggle" id="creative-guides-toggle" style="display: none;" title="Show where the App Store crops a header / search results asset (preview only, never exported)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="5" width="18" height="14" rx="1.5" stroke-dasharray="3 2"/><rect x="8" y="9" width="8" height="6" rx="1"/>
+                </svg>
+                Safe area
+            </button>
             <div class="preview-strip">
                 <div class="side-preview side-preview-far-left" id="side-preview-far-left">
                     <canvas id="preview-canvas-far-left"></canvas>
@@ -645,8 +652,8 @@
                     <label class="control-label">Device Model</label>
                     <div class="btn-group" id="device-model-2d-selector">
                         <button class="active" data-model2d="iphone">iPhone</button>
+                        <button data-model2d="iphone-duo" title="iPhone Duo">Duo</button>
                         <button data-model2d="ipad">iPad</button>
-                        <button data-model2d="samsung">Samsung</button>
                         <button data-model2d="mac">Mac</button>
                         <button data-model2d="watch">Watch</button>
                     </div>
@@ -666,6 +673,20 @@
                             <button data-watchfinish="gold">Gold</button>
                         </div>
                     </div>
+                    <div id="duo-options-row" style="display: none; margin-top: 10px;">
+                        <label class="control-label">iPhone Duo Display</label>
+                        <div class="btn-group" id="duo-display-selector">
+                            <button class="active" data-duodisplay="inner">Inner 7.6"</button>
+                            <button data-duodisplay="outer">Outer 5.4"</button>
+                        </div>
+                        <div id="duo-finish-row" style="margin-top: 10px;">
+                            <label class="control-label">iPhone Duo Finish</label>
+                            <div class="btn-group" id="duo-finish-selector">
+                                <button class="active" data-duofinish="night-sky">Night Sky</button>
+                                <button data-duofinish="star-white">Star White</button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="toggle-row" style="margin-top: 10px;">
                         <span class="toggle-label">Device bezel</span>
                         <div class="toggle" id="bezel-toggle"></div>
@@ -675,7 +696,6 @@
                         <button class="active" data-notch="none">None</button>
                         <button data-notch="island">Island</button>
                         <button data-notch="notch">Notch</button>
-                        <button data-notch="punch">Punch</button>
                     </div>
                 </div>
 
@@ -694,7 +714,7 @@
                         <label class="control-label">Device Model</label>
                         <div class="btn-group" id="device-3d-selector">
                             <button class="active" data-model="iphone">iPhone</button>
-                            <button data-model="samsung">Samsung</button>
+                            <button data-model="iphone-duo">iPhone Duo</button>
                         </div>
                     </div>
                     <div class="control-group">

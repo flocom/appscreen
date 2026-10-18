@@ -1,6 +1,6 @@
 # appscreen MCP server
 
-An [MCP](https://modelcontextprotocol.io) server that generates App Store / Play Store / web
+An [MCP](https://modelcontextprotocol.io) server that generates App Store / web
 marketing screenshots, server-side. It's a Node port of the 2D rendering pipeline from
 [appscreen](../README.md) (`app.js`): same output sizes, the same 25 gradient presets, and the
 same background / device-placement / text-overlay math — rendered headlessly with

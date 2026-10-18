@@ -232,8 +232,72 @@ const LAYOUT_TEMPLATES = [
                 device: { scale: 48, x: 26, top: 0.26 }
             }
         ]
+    },
+
+    // ---- App Store creative assets (iOS 27 header / search results) -------
+    // `formats` restricts a template to those output sizes (the gallery shows
+    // only these on a creative canvas, and never shows them elsewhere). Every
+    // text zone sits inside the safe area of Apple's templates for its format
+    // (header: the centred 43% × 40%; search results: the centred 56% × 40%;
+    // the 16:9 universal asset: the overlap of both once centre-cropped), so a
+    // crop never takes a word. Only background and device run to the edges.
+    {
+        id: 'creative-split',
+        name: 'Header · titre + appareil',
+        hint: 'Phrase courte à gauche du centre, appareil à droite — tout le texte reste dans la zone sûre.',
+        palette: 'midnight',
+        formats: ['creative-header', 'creative-universal'],
+        steps: [{
+            zone: { x: 29, y: 35, width: 21, height: 30 },
+            text: { position: 'top', headlineSize: 150, subheadlineSize: 66, lineHeight: 108, subheadlineSpacing: 30 },
+            device: { scale: 86, x: 66, top: 0.07 }
+        }]
+    },
+    {
+        id: 'creative-tilt',
+        name: 'Header · appareil incliné',
+        hint: 'Même composition, appareil penché pour plus de mouvement.',
+        palette: 'violet',
+        formats: ['creative-header', 'creative-universal'],
+        steps: [{
+            zone: { x: 29, y: 35, width: 21, height: 30 },
+            text: { position: 'top', headlineSize: 150, subheadlineSize: 66, lineHeight: 108, subheadlineSpacing: 30 },
+            device: { scale: 88, x: 66, top: 0.08, rotation: -9 }
+        }]
+    },
+    {
+        id: 'creative-search-split',
+        name: 'Search · phrase + écran',
+        hint: 'L’interface bien visible à droite, une phrase courte à gauche : l’usage se comprend d’un coup d’œil.',
+        palette: 'ocean',
+        formats: ['creative-search'],
+        steps: [{
+            zone: { x: 23, y: 33, width: 25, height: 34 },
+            text: { position: 'top', headlineSize: 160, subheadlineSize: 70, lineHeight: 108, subheadlineSpacing: 32 },
+            device: { scale: 82, x: 66, top: 0.09 }
+        }]
+    },
+    {
+        id: 'creative-search-top',
+        name: 'Search · titre au-dessus',
+        hint: 'Une ligne de titre, l’appareil centré qui déborde en bas.',
+        palette: 'sunset',
+        formats: ['creative-search'],
+        steps: [{
+            zone: { x: 23, y: 31, width: 54, height: 12 },
+            text: { position: 'top', headlineSize: 150, subheadlineSize: 66, lineHeight: 108, subheadlineSpacing: 24 },
+            device: { scale: 66, x: 50, top: 0.45 }
+        }]
     }
 ];
+
+// The templates offered for the project's current output size: on an App Store
+// creative canvas only the ones built for it, everywhere else the rest.
+function availableLayoutTemplates() {
+    const key = typeof state !== 'undefined' ? state.outputDevice : '';
+    const creative = typeof isCreativeOutput === 'function' && isCreativeOutput(key);
+    return LAYOUT_TEMPLATES.filter(t => t.formats ? t.formats.includes(key) : !creative);
+}
 
 // ---- Geometry helpers -----------------------------------------------------
 
@@ -434,12 +498,29 @@ function tplFrameW() {
     return Math.round(TPL_FRAME_H * d.baseWidth / d.height);
 }
 
+// Width / height of the device the preview stands in for: the selected
+// screen's image when there is one, otherwise a phone on a landscape canvas
+// (where the device is far narrower than the frame) and the canvas aspect on a
+// portrait one.
+function tplDeviceAspect() {
+    const ss = typeof state !== 'undefined' ? state.screenshots[state.selectedIndex] : null;
+    const img = ss && typeof getScreenshotImage === 'function' ? getScreenshotImage(ss) : null;
+    if (img && img.width && img.height) return img.width / img.height;
+    const d = typeof getCanvasDimensions === 'function' ? getCanvasDimensions() : null;
+    if (d && d.baseWidth > d.height) return 0.46;
+    return d && d.height ? d.baseWidth / d.height : 2 / 3;
+}
+
 function templateFrameSVG(step, clipId) {
     const W = tplFrameW(), H = TPL_FRAME_H;
     const d = step.device;
     const s = d.scale / 100;
-    const dw = W * s;
-    const dh = H * s;
+    // Same fit as drawScreenshotToContext(): `scale`% of the width, capped at
+    // `scale`% of the height.
+    const aspect = tplDeviceAspect();
+    let dw = W * s;
+    let dh = dw / aspect;
+    if (dh > H * s) { dh = H * s; dw = dh * aspect; }
     const dx = (W - dw) / 2 + (((typeof d.x === 'number' ? d.x : 50) / 100) - 0.5) * Math.max(W - dw, W * 0.15);
     const dy = H * d.top;
     const cx = dx + dw / 2;
@@ -502,7 +583,9 @@ let selectedTemplateId = LAYOUT_TEMPLATES[0].id;
 function renderTemplateGallery() {
     const gallery = document.getElementById('template-gallery');
     if (!gallery) return;
-    gallery.innerHTML = LAYOUT_TEMPLATES.map(tpl =>
+    const templates = availableLayoutTemplates();
+    if (!templates.some(t => t.id === selectedTemplateId) && templates.length) selectedTemplateId = templates[0].id;
+    gallery.innerHTML = templates.map(tpl =>
         `<button type="button" class="template-card${tpl.id === selectedTemplateId ? ' active' : ''}" ` +
         `data-template="${tpl.id}" title="${tpl.hint.replace(/"/g, '&quot;')}">` +
             `<div class="template-card-preview">${templatePreviewSVG(tpl)}</div>` +

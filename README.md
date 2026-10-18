@@ -14,7 +14,8 @@ A free, open-source tool for creating beautiful App Store screenshots with custo
 ## Features
 
 ### Output & Export
-- **Multiple Output Sizes**: iPhone, iPad, Apple Watch, Mac, Android and web sizes matching the App Store / Play Store requirements, plus custom sizes
+- **Multiple Output Sizes**: iPhone, iPhone Duo (inner and outer display), iPad, Apple Watch, Mac and web sizes matching the App Store requirements, plus custom sizes
+- **App Store Header & Search Results (iOS 27)**: product page header (21:9, 3840 × 1646), search results asset (3:2, 3840 × 2560) and the 16:9 universal asset (5244 × 2950), with safe-area guides, dedicated layout templates and alpha-free PNG export
 - **Batch Export**: Export all screenshots at once as a ZIP file
 - **Per-Screenshot Settings**: Each screenshot can have its own background, device settings, and text
 
@@ -27,7 +28,8 @@ A free, open-source tool for creating beautiful App Store screenshots with custo
 
 ### Device Mockups
 - **2D Mode**: Position, scale, rotate, and adjust corner radius of screenshots
-- **3D Mode**: Interactive iPhone 15 Pro Max and Samsung Galaxy S25 Ultra 3D mockups with drag-to-rotate (iPad, Mac and Apple Watch are 2D-only)
+- **iPhone Duo**: 2D mockup of Apple's foldable for both displays (inner 7.6", outer 5.4") in Night Sky or Star White, built from Apple's published dimensions
+- **3D Mode**: Interactive iPhone 15 Pro Max and iPhone Duo (folded or unfolded) 3D mockups with drag-to-rotate (iPad, Mac and Apple Watch are 2D-only)
 - **Position Presets**: Centered, bleed, tilt left/right, perspective, and more
 - **Shadow Effects**: Customizable drop shadows with color, blur, opacity, and offset
 - **Border Effects**: Add borders around screenshots with adjustable width and opacity
@@ -168,7 +170,7 @@ docker compose -f docker-compose.build.yml up -d
 2. **Choose Output Size**: Select the target device size from the sidebar
 3. **Customize Background**: Choose gradient, solid color, or image background
 4. **Position Screenshot**: Use presets or manually adjust scale, position, and rotation
-5. **Switch to 3D** (optional): Enable 3D mode for an interactive iPhone or Samsung mockup (unavailable on Apple Watch output sizes, which have no 3D model)
+5. **Switch to 3D** (optional): Enable 3D mode for an interactive iPhone or iPhone Duo mockup (unavailable on Apple Watch output sizes, which have no 3D model)
 6. **Add Text**: Enter your headline and optional subheadline
 7. **Export**: Download the current screenshot or export all at once as ZIP
 
@@ -187,7 +189,7 @@ Your API key is stored locally in your browser and only sent to the respective A
 ## MCP Server (generate screenshots with AI agents)
 
 This repo ships an [**MCP**](https://modelcontextprotocol.io) server in [`mcp-server/`](mcp-server/)
-that renders App Store / Play Store / web screenshots **headlessly** (no browser) — a Node port of
+that renders App Store / web screenshots **headlessly** (no browser) — a Node port of
 the same 2D pipeline (`app.js`) using [`@napi-rs/canvas`](https://github.com/Brooooooklyn/canvas).
 It lets an AI agent like **Claude** generate marketing screenshots for you, on demand or in batches.
 
@@ -275,8 +277,6 @@ Built something with this tool? Add your app to the list by submitting a pull re
 MIT License - feel free to use, modify, and distribute.
 
 ## Credits
-- **Samsung Galaxy S25 Ultra 3D Model** by [mistJS](https://sketchfab.com/mistjs) - Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-
 - **iPhone 15 Pro Max 3D Model** by [MajdyModels](https://sketchfab.com/majdymodels) - Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 ## Author
