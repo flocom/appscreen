@@ -1570,7 +1570,8 @@ const noScreenshot = document.getElementById('no-screenshot');
 // SERVER-ONLY STORAGE. The MCP server's disk is the one and only project store:
 // a project is on the server or it doesn't exist. The browser persists nothing
 // but the current-project id (a UI preference, in localStorage). Older builds
-// kept a full IndexedDB mirror — it is deleted at startup (legacy cleanup).
+// kept a full IndexedDB mirror. Keep it until any browser-only projects have
+// been copied to the server; it remains a recovery copy after migration.
 const LEGACY_DB_NAME = 'AppStoreScreenshotGenerator';
 
 let currentProjectId = 'default';
@@ -1584,6 +1585,10 @@ let projects = [{ id: 'default', name: 'Default Project', screenshotCount: 0 }];
 // server's copy rather than clobber it. remoteRev caches the last-seen rev per id.
 let currentProjectRev = 0;
 const remoteRev = new Map();
+// Rebase a queued edit only on an earlier local snapshot's accepted revision.
+// An older retry must not overwrite a newer local snapshot that already landed.
+const ownAcceptedRev = new Map();
+let nextRemotePushSeq = 0;
 // True while we're reloading the server's newer copy into the editor, so saveState
 // doesn't echo that freshly-loaded data straight back out as a redundant push.
 let _reloadingFromServer = false;
@@ -1594,12 +1599,72 @@ let _remotePushInFlight = false;
 // this tab instantly, with no manual refresh.
 let _remoteEventSource = null;
 
-// One-time cleanup of the legacy IndexedDB mirror (older builds cached projects
-// in the browser; that cache no longer exists — the server is the only store).
-function deleteLegacyDatabase() {
+// Older builds could keep projects only in IndexedDB. Read without a version
+// upgrade and copy missing projects before the server-only editor starts.
+async function migrateLegacyDatabase() {
+    if (typeof indexedDB === 'undefined') return;
+    if (indexedDB.databases) {
+        const known = await indexedDB.databases();
+        if (!known.some(db => db.name === LEGACY_DB_NAME)) return;
+    }
+    const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(LEGACY_DB_NAME);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+        request.onblocked = () => reject(new Error('Legacy project database is blocked by another tab'));
+    });
+    let records, metaRows;
     try {
-        if (typeof indexedDB !== 'undefined') indexedDB.deleteDatabase(LEGACY_DB_NAME);
-    } catch (e) { /* best effort */ }
+        if (!database.objectStoreNames.contains('projects')) return;
+        if (!database.objectStoreNames.contains('meta')) throw new Error('Legacy project metadata is unavailable');
+        [records, metaRows] = await new Promise((resolve, reject) => {
+            const tx = database.transaction(['projects', 'meta'], 'readonly');
+            const projectRequest = tx.objectStore('projects').getAll();
+            const metaRequest = tx.objectStore('meta').getAll();
+            tx.oncomplete = () => resolve([projectRequest.result || [], metaRequest.result || []]);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+        if (!records.length) return;
+        if (!RemoteStore.enabled()) throw new Error('Legacy projects need a configured server before migration');
+        const serverList = await RemoteStore.list();
+        if (!serverList) throw new Error('Legacy projects remain in the browser: server is unreachable');
+        const serverIds = new Set(serverList.map(project => project.id));
+        const migrated = new Set(metaRows.filter(row => row && row.key?.startsWith('serverMigration:') && row.value === true)
+            .map(row => row.key.slice('serverMigration:'.length)));
+        const projectNames = (metaRows.find(row => row && row.key === 'projects') || {}).value || [];
+        const names = new Map((Array.isArray(projectNames) ? projectNames : []).map(project => [project.id, project.name]));
+        const candidates = records.filter(record => record && record.id && !migrated.has(record.id)
+            && !serverIds.has(record.id) && !(record.rev > 0));
+        let tombstones = new Set();
+        if (candidates.length) {
+            const response = await fetch(RemoteStore.baseUrl() + '/tombstones', { headers: RemoteStore._headers(false) });
+            if (!response.ok) throw new Error('Cannot check deleted legacy projects');
+            tombstones = new Set((await response.json()).ids || []);
+        }
+        const markMigrated = (id) => new Promise((resolve, reject) => {
+            const tx = database.transaction('meta', 'readwrite');
+            tx.objectStore('meta').put({ key: 'serverMigration:' + id, value: true });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+        for (const record of records) {
+            if (!record || !record.id || migrated.has(record.id)) continue;
+            // A positive revision proves it once lived on the server. Its
+            // absence is authoritative even after tombstone retention ends.
+            if (serverIds.has(record.id) || record.rev > 0 || tombstones.has(record.id)) {
+                await markMigrated(record.id);
+                continue;
+            }
+            const ok = await RemoteStore.put({ ...record, name: names.get(record.id) || record.name || record.id, rev: 0 });
+            if (!ok) throw new Error('Legacy project could not be copied to the server: ' + record.id);
+            await markMigrated(record.id);
+            serverIds.add(record.id);
+        }
+    } finally {
+        database.close();
+    }
 }
 
 // The only persisted UI preference: which project is open.
@@ -1643,15 +1708,15 @@ async function getPendingUploads() {
 function persistPendingUploads() { /* in-memory only — nothing to persist */ }
 
 // Record an image that just entered the editor (called from every import path).
-function trackPendingUpload(lang, name, src) {
+function trackPendingUpload(lang, name, src, targetName) {
     if (!src || typeof src !== 'string' || !src.startsWith('data:image/')) return;
     const l = lang || 'en';
     const pid = currentProjectId; // capture now — the user may switch projects before the async hop
     getPendingUploads().then(all => {
         const list = all[pid] = all[pid] || [];
         const base = (typeof getBaseFilename === 'function') ? getBaseFilename(name || '') : (name || '');
-        const entry = { lang: l, name: name || '', base, src, ts: Date.now() };
-        const i = list.findIndex(e => e.base === base && e.lang === l);
+        const entry = { lang: l, name: name || '', base, targetName: targetName || '', src, ts: Date.now() };
+        const i = list.findIndex(e => (e.targetName || e.base) === (targetName || base) && e.lang === l);
         if (i >= 0) list[i] = entry; else list.push(entry);
         persistPendingUploads();
     }).catch(() => {});
@@ -1669,13 +1734,16 @@ function confirmPendingUploads(projectId, refRecord, missingRefs) {
             const b = (typeof getBaseFilename === 'function') ? getBaseFilename(s.name || '') : (s.name || '');
             const li = s.localizedImages || {};
             Object.keys(li).forEach(lang => {
-                if (li[lang] && li[lang].src) slots.set(b + '\u0000' + lang, li[lang].src);
+                if (li[lang] && li[lang].src) {
+                    slots.set(b + '\u0000' + lang, li[lang].src);
+                    slots.set((s.name || '') + '\u0000' + lang, li[lang].src);
+                }
             });
         });
         const before = list.length;
         const kept = list.filter(e => {
             if (Date.now() - e.ts > PENDING_UPLOAD_MAX_AGE_MS) return false; // aged out
-            const src = slots.get(e.base + '\u0000' + e.lang);
+            const src = slots.get((e.targetName || e.base) + '\u0000' + e.lang);
             if (!src) return true; // slot absent from the accepted record — still pending
             if (typeof src === 'string' && src.startsWith(REF_SCHEME) && missing.has(src.slice(REF_SCHEME.length))) {
                 return true; // record accepted but the blob is missing server-side — still pending
@@ -1706,9 +1774,12 @@ function applyPendingUploadsToRecord(rec, list) {
         let s = null;
         for (const sc of (rec.screenshots || [])) {
             const b = (typeof getBaseFilename === 'function') ? getBaseFilename(sc.name || '') : (sc.name || '');
-            if (b === e.base) { s = sc; break; }
+            if (e.targetName ? sc.name === e.targetName : b === e.base) { s = sc; break; }
         }
         if (!s) {
+            // A replacement must never create an extra screenshot when its
+            // original screen was renamed or removed remotely.
+            if (e.targetName) { keep.push(e); continue; }
             // The screenshot this upload created doesn't exist server-side → recreate
             // it from the project defaults (same shape as createNewScreenshot).
             const d = rec.defaults || {};
@@ -2124,13 +2195,20 @@ function ensureEntryImage(entry, silent) {
     const img = new Image();
     img.decoding = 'async';
     if (!url.startsWith('data:')) img.crossOrigin = 'anonymous'; // keep canvas export-clean
-    img.onload = () => {
-        entry.image = img;
-        entry._loading = false;
-        entry._failedSrc = null;
-        if (!silent) scheduleCanvasRefresh();
-    };
-    img.onerror = () => { entry._loading = false; entry._failedSrc = entry.src; };
+    entry._loadPromise = new Promise((resolve) => {
+        img.onload = () => {
+            entry.image = img;
+            entry._loading = false;
+            entry._failedSrc = null;
+            if (!silent) scheduleCanvasRefresh();
+            resolve(img);
+        };
+        img.onerror = () => {
+            entry._loading = false;
+            entry._failedSrc = entry.src;
+            resolve(null);
+        };
+    });
     img.src = url;
     return null;
 }
@@ -2352,15 +2430,16 @@ const RemoteStore = {
 
             // Finally PUT the tiny references-only project record.
             setSyncStatus('syncing', 'Enregistrement du projet…');
-            // Base revision computed HERE, at send time — not when the save was
-            // scheduled. Pushes are serialized (_putChain), so by now any earlier
-            // push has resolved and currentProjectRev is up to date. Using the live
-            // rev avoids a stale base that would 409 against our OWN earlier push
-            // (the false "modifié ailleurs" when edits outrun the network).
-            const baseRev = (record.id === currentProjectId)
+            const liveRev = (record.id === currentProjectId)
                 ? currentProjectRev
                 : (remoteRev.has(record.id) ? remoteRev.get(record.id)
                    : (typeof record.rev === 'number' ? record.rev : undefined));
+            const snapshotRev = typeof record.rev === 'number' ? record.rev : undefined;
+            const accepted = ownAcceptedRev.get(record.id);
+            const mayRebase = accepted && accepted.rev === liveRev
+                && typeof record._pushSeq === 'number' && record._pushSeq > accepted.seq;
+            const baseRev = snapshotRev == null ? undefined
+                : (liveRev !== snapshotRev && !mayRebase ? snapshotRev : liveRev);
             if (baseRev != null) refRecord.rev = baseRev; else delete refRecord.rev;
             const headers = this._headers(true);
             if (baseRev != null) headers['If-Match'] = String(baseRev);
@@ -2388,6 +2467,7 @@ const RemoteStore = {
                     if (j && typeof j.rev === 'number') {
                         // Adopt the new revision so our next push isn't seen as stale.
                         remoteRev.set(record.id, j.rev);
+                        ownAcceptedRev.set(record.id, { rev: j.rev, seq: record._pushSeq || 0 });
                         if (record.id === currentProjectId) currentProjectRev = j.rev;
                     }
                     if (j && Array.isArray(j.missingRefs)) missingRefs = j.missingRefs;
@@ -2409,7 +2489,7 @@ const RemoteStore = {
                         setSyncStatus('ok', 'Enregistré (images réparées sur le serveur)');
                     }
                     confirmPendingUploads(record.id, refRecord, still);
-                    return true;
+                    return still.length === 0;
                 }
                 confirmPendingUploads(record.id, refRecord, []);
             }
@@ -2493,9 +2573,13 @@ let loadStateSeq = 0;
 function setProjectLoading(v) {
     projectLoading = v;
     if (v) {
-        // Safety net: never stay blocked if image loads never complete.
+        // Surface a stalled load without allowing an incomplete save.
         clearTimeout(setProjectLoading._t);
-        setProjectLoading._t = setTimeout(() => { projectLoading = false; _reloadingFromServer = false; }, 8000);
+        setProjectLoading._t = setTimeout(() => {
+            // Keep saves blocked. A partially hydrated screenshot array must
+            // never replace the complete server record.
+            setSyncStatus('error', 'Chargement incomplet — rechargez la page avant de modifier le projet');
+        }, 8000);
     } else {
         clearTimeout(setProjectLoading._t);
     }
@@ -2598,6 +2682,10 @@ function _executeScheduledPush(id, rec) {
 
 function scheduleRemotePush(record) {
     if (!RemoteStore.enabled() || !record || !record.id) return;
+    // Non-enumerable so this scheduling metadata is never stored server-side.
+    if (typeof record._pushSeq !== 'number') {
+        Object.defineProperty(record, '_pushSeq', { value: ++nextRemotePushSeq });
+    }
     const id = record.id;
     const entry = _remotePushPending.get(id) || {};
     entry.record = record;
@@ -2639,7 +2727,7 @@ if (typeof window !== 'undefined') {
     window.addEventListener('beforeunload', (e) => {
         let pendingUploads = false;
         try { pendingUploads = !!(_pendingUploads && Object.keys(_pendingUploads).length); } catch (err) {}
-        if (_remotePushPending.size > 0 || _remotePushInFlight || pendingUploads) {
+        if (projectLoading || _remotePushPending.size > 0 || _remotePushInFlight || pendingUploads) {
             e.preventDefault();
             e.returnValue = '';
         }
@@ -2877,7 +2965,8 @@ function updateProjectSelector() {
 // Initialize
 async function init() {
     try {
-        deleteLegacyDatabase(); // older builds cached projects in IndexedDB — gone
+        setProjectLoading(true);
+        await migrateLegacyDatabase(); // preserve and copy browser-only projects first
         loadProjectsMeta();     // just the current-project id (localStorage)
         await syncWithRemote(); // fetch the project list from the ONLY store: the server
         updateProjectSelector();
@@ -2887,7 +2976,10 @@ async function init() {
         resetHistory();
     } catch (e) {
         console.error('Initialization error:', e);
-        // Continue with defaults
+        // The legacy database still holds the projects. Block writes so the
+        // empty editor cannot replace the server's complete project record.
+        setProjectLoading(true);
+        setSyncStatus('error', 'Migration incomplète — vérifiez le serveur puis rechargez la page');
         syncUIWithState();
         updateCanvas();
         resetHistory();
@@ -2973,6 +3065,7 @@ function stripTransientImageFields(screenshots) {
             if (!e) continue;
             delete e.image;
             delete e._loading;
+            delete e._loadPromise;
             delete e._failedSrc;
         }
     }
@@ -3005,7 +3098,7 @@ function historyFingerprint() {
             df: state.defaults,
             s: state.screenshots,
         }, (k, v) => {
-            if (k === '_loading' || k === '_failedSrc') return undefined;
+            if (k === '_loading' || k === '_loadPromise' || k === '_failedSrc') return undefined;
             if (k === 'image' && v === null) return undefined;
             if (typeof HTMLImageElement !== 'undefined' && v instanceof HTMLImageElement) return undefined;
             if (typeof HTMLCanvasElement !== 'undefined' && v instanceof HTMLCanvasElement) return undefined;
@@ -9441,7 +9534,7 @@ function replaceScreenshot(index) {
                     name: file.name
                 };
                 // Pending-upload ledger: a replacement must not be lost either.
-                if (typeof trackPendingUpload === 'function') trackPendingUpload(lang, file.name, event.target.result);
+                if (typeof trackPendingUpload === 'function') trackPendingUpload(lang, file.name, event.target.result, screenshot.name);
 
                 // Also update legacy image field for compatibility
                 screenshot.image = img;
@@ -12032,16 +12125,11 @@ async function ensureLanguageImagesLoaded(lang) {
                 if (li[l]?.src) { entry = li[l]; break; }
             }
         }
-        if (entry && entry.src && !entry.image && !entry._loading) {
-            jobs.push(new Promise((res) => {
-                const url = blobUrlForRef(entry.src);
-                if (!url) return res();
-                const img = new Image();
-                img.decoding = 'async';
-                if (!url.startsWith('data:')) img.crossOrigin = 'anonymous';
-                img.onload = () => { entry.image = img; res(); };
-                img.onerror = () => res();
-                img.src = url;
+        if (entry && entry.src && !entry.image) {
+            ensureEntryImage(entry, true);
+            if (!entry._loadPromise) throw new Error('Image unavailable for export: ' + entry.src);
+            jobs.push(entry._loadPromise.then(img => {
+                if (!img) throw new Error('Image failed to load for export: ' + entry.src);
             }));
         }
     }
@@ -12128,54 +12216,54 @@ async function exportAllForLanguage(lang) {
         subheadline: s.text.currentSubheadlineLang
     }));
 
-    // Temporarily switch to the target language (images and text)
-    state.currentLanguage = lang;
-    state.screenshots.forEach(s => {
-        s.text.currentHeadlineLang = lang;
-        s.text.currentSubheadlineLang = lang;
-    });
-
-    // Decode this language's images before rendering (lazy loading).
-    await ensureLanguageImagesLoaded(lang);
-
-    let panelNum = 1; // running counter so panorama panels stay in order
-    const pad = (n) => String(n).padStart(2, '0');
-    for (let i = 0; i < state.screenshots.length; i++) {
-        // Update progress
-        const percent = Math.round(((i + 1) / total) * 90); // Reserve 10% for ZIP generation
-        showExportProgress('Exporting...', `Screenshot ${i + 1} of ${total}`, percent);
-        await yieldToUI();
-
-        // Rendered off-screen: the visible preview and its neighbours are left alone.
-        const panels = await renderScreenshotPanels(i);
-        panels.forEach((dataUrl) => {
-            const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
-            zip.file(`${exportFileStem()}-${pad(panelNum++)}.png`, base64Data, { base64: true });
+    try {
+        // Temporarily switch to the target language (images and text)
+        state.currentLanguage = lang;
+        state.screenshots.forEach(s => {
+            s.text.currentHeadlineLang = lang;
+            s.text.currentSubheadlineLang = lang;
         });
+
+        // Decode this language's images before rendering (lazy loading).
+        await ensureLanguageImagesLoaded(lang);
+
+        let panelNum = 1; // running counter so panorama panels stay in order
+        const pad = (n) => String(n).padStart(2, '0');
+        for (let i = 0; i < state.screenshots.length; i++) {
+            // Update progress
+            const percent = Math.round(((i + 1) / total) * 90); // Reserve 10% for ZIP generation
+            showExportProgress('Exporting...', `Screenshot ${i + 1} of ${total}`, percent);
+            await yieldToUI();
+
+            // Rendered off-screen: the visible preview and its neighbours are left alone.
+            const panels = await renderScreenshotPanels(i);
+            panels.forEach((dataUrl) => {
+                const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+                zip.file(`${exportFileStem()}-${pad(panelNum++)}.png`, base64Data, { base64: true });
+            });
+        }
+
+        // Generate ZIP
+        showExportProgress('Generating ZIP...', '', 95);
+        const content = await zip.generateAsync({ type: 'blob' });
+
+        showExportProgress('Complete!', '', 100);
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const link = document.createElement('a');
+        link.download = `screenshots_${state.outputDevice}_${lang}.zip`;
+        link.href = URL.createObjectURL(content);
+        link.click();
+        URL.revokeObjectURL(link.href);
+    } finally {
+        state.selectedIndex = originalIndex;
+        state.currentLanguage = originalLang;
+        state.screenshots.forEach((s, i) => {
+            s.text.currentHeadlineLang = originalTextLangs[i].headline;
+            s.text.currentSubheadlineLang = originalTextLangs[i].subheadline;
+        });
+        updateCanvas();
+        hideExportProgress();
     }
-
-    // Restore original settings
-    state.selectedIndex = originalIndex;
-    state.currentLanguage = originalLang;
-    state.screenshots.forEach((s, i) => {
-        s.text.currentHeadlineLang = originalTextLangs[i].headline;
-        s.text.currentSubheadlineLang = originalTextLangs[i].subheadline;
-    });
-    updateCanvas();
-
-    // Generate ZIP
-    showExportProgress('Generating ZIP...', '', 95);
-    const content = await zip.generateAsync({ type: 'blob' });
-
-    showExportProgress('Complete!', '', 100);
-    await new Promise(resolve => setTimeout(resolve, 400));
-    hideExportProgress();
-
-    const link = document.createElement('a');
-    link.download = `screenshots_${state.outputDevice}_${lang}.zip`;
-    link.href = URL.createObjectURL(content);
-    link.click();
-    URL.revokeObjectURL(link.href);
 }
 
 // Export all screenshots for all languages (separate folders)
@@ -12198,59 +12286,59 @@ async function exportAllLanguages() {
         subheadline: s.text.currentSubheadlineLang
     }));
 
-    for (let langIdx = 0; langIdx < state.projectLanguages.length; langIdx++) {
-        const lang = state.projectLanguages[langIdx];
-        const langName = languageNames[lang] || lang.toUpperCase();
+    try {
+        for (let langIdx = 0; langIdx < state.projectLanguages.length; langIdx++) {
+            const lang = state.projectLanguages[langIdx];
+            const langName = languageNames[lang] || lang.toUpperCase();
 
-        // Temporarily switch to this language (images and text)
-        state.currentLanguage = lang;
-        state.screenshots.forEach(s => {
-            s.text.currentHeadlineLang = lang;
-            s.text.currentSubheadlineLang = lang;
-        });
-
-        // Decode this language's images before rendering (lazy loading).
-        await ensureLanguageImagesLoaded(lang);
-
-        let panelNum = 1; // running counter so panorama panels stay in order
-        for (let i = 0; i < state.screenshots.length; i++) {
-            completedItems++;
-            const percent = Math.round((completedItems / totalItems) * 90); // Reserve 10% for ZIP
-            showExportProgress('Exporting...', `${langName}: Screenshot ${i + 1} of ${totalScreenshots}`, percent);
-            await yieldToUI();
-
-            // Rendered off-screen: the visible preview and its neighbours are left alone.
-            const panels = await renderScreenshotPanels(i);
-            panels.forEach((dataUrl) => {
-                const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
-                // Use language code as folder name
-                zip.file(`${lang}/${exportFileStem()}-${panelNum++}.png`, base64Data, { base64: true });
+            // Temporarily switch to this language (images and text)
+            state.currentLanguage = lang;
+            state.screenshots.forEach(s => {
+                s.text.currentHeadlineLang = lang;
+                s.text.currentSubheadlineLang = lang;
             });
+
+            // Decode this language's images before rendering (lazy loading).
+            await ensureLanguageImagesLoaded(lang);
+
+            let panelNum = 1; // running counter so panorama panels stay in order
+            for (let i = 0; i < state.screenshots.length; i++) {
+                completedItems++;
+                const percent = Math.round((completedItems / totalItems) * 90); // Reserve 10% for ZIP
+                showExportProgress('Exporting...', `${langName}: Screenshot ${i + 1} of ${totalScreenshots}`, percent);
+                await yieldToUI();
+
+                // Rendered off-screen: the visible preview and its neighbours are left alone.
+                const panels = await renderScreenshotPanels(i);
+                panels.forEach((dataUrl) => {
+                    const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+                    // Use language code as folder name
+                    zip.file(`${lang}/${exportFileStem()}-${panelNum++}.png`, base64Data, { base64: true });
+                });
+            }
         }
+
+        // Generate ZIP
+        showExportProgress('Generating ZIP...', '', 95);
+        const content = await zip.generateAsync({ type: 'blob' });
+
+        showExportProgress('Complete!', '', 100);
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const link = document.createElement('a');
+        link.download = `screenshots_${state.outputDevice}_all-languages.zip`;
+        link.href = URL.createObjectURL(content);
+        link.click();
+        URL.revokeObjectURL(link.href);
+    } finally {
+        state.selectedIndex = originalIndex;
+        state.currentLanguage = originalLang;
+        state.screenshots.forEach((s, i) => {
+            s.text.currentHeadlineLang = originalTextLangs[i].headline;
+            s.text.currentSubheadlineLang = originalTextLangs[i].subheadline;
+        });
+        updateCanvas();
+        hideExportProgress();
     }
-
-    // Restore original settings
-    state.selectedIndex = originalIndex;
-    state.currentLanguage = originalLang;
-    state.screenshots.forEach((s, i) => {
-        s.text.currentHeadlineLang = originalTextLangs[i].headline;
-        s.text.currentSubheadlineLang = originalTextLangs[i].subheadline;
-    });
-    updateCanvas();
-
-    // Generate ZIP
-    showExportProgress('Generating ZIP...', '', 95);
-    const content = await zip.generateAsync({ type: 'blob' });
-
-    showExportProgress('Complete!', '', 100);
-    await new Promise(resolve => setTimeout(resolve, 400));
-    hideExportProgress();
-
-    const link = document.createElement('a');
-    link.download = `screenshots_${state.outputDevice}_all-languages.zip`;
-    link.href = URL.createObjectURL(content);
-    link.click();
-    URL.revokeObjectURL(link.href);
 }
 
 // ===== Emoji Picker (inline dropdown) =====

@@ -11,9 +11,10 @@
 #      are private):  docker login ghcr.io -u <github-user> -p <PAT-with-read:packages>
 #   2) (public exposure) put your Cloudflare tunnel token in a .env file:
 #        TUNNEL_TOKEN=xxxxx
-#      and route the public hostname's paths in the Cloudflare dashboard:
-#        appscreen.agence-zen.com/mcp*  ->  http://appscreen-mcp:3000
-#        appscreen.agence-zen.com/*     ->  http://appscreen:80
+#      and route the whole public hostname to http://appscreen:80 in the
+#      Cloudflare dashboard. The web container proxies /mcp through the same
+#      SITE_PASSWORD gate as the editor. Remove any direct /mcp* tunnel route
+#      to appscreen-mcp; it would bypass that gate.
 #   3) (optional) protect the site with a password (login page): add to the same
 #      .env file
 #        SITE_PASSWORD=your-password
@@ -51,8 +52,8 @@ services:
     container_name: appscreen-mcp
     restart: unless-stopped
     ports:
-      # Loopback-only: cloudflared reaches this service over the compose network
-      # (http://appscreen-mcp:3000), not the host port. For LAN exposure, remove
+      # Loopback-only: nginx reaches this service over the compose network,
+      # not the host port. For LAN exposure, remove
       # the "127.0.0.1:" prefix AND set MCP_AUTH_TOKEN.
       - "127.0.0.1:3000:3000"
     environment:

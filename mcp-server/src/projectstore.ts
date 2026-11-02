@@ -968,7 +968,9 @@ export async function resolveImageToDataUrl(input: string): Promise<string> {
     mime = f.mime;
   } else if (/^https?:\/\//i.test(input)) {
     await assertPublicUrl(input); // SSRF guard (see security.ts)
-    const res = await fetch(input);
+    // A public URL may redirect to a private host. Reject redirects rather
+    // than letting fetch follow them past the initial SSRF check.
+    const res = await fetch(input, { redirect: "error" });
     if (!res.ok) throw new Error(`Failed to fetch image (HTTP ${res.status}): ${input}`);
     buf = Buffer.from(await res.arrayBuffer());
     mime = res.headers.get("content-type")?.split(";")[0] || undefined;
