@@ -1311,6 +1311,13 @@ function renderThreeJSForScreenshot(targetCanvas, width, height, screenshotIndex
     if (screenshotImage && screenPlaneToUse) {
         const cornerRadius = Math.round(screenshotImage.width * config.cornerRadiusFactor);
         const roundedImage = createRoundedScreenImage(screenshotImage, cornerRadius);
+        // Match the main 3D preview texture when rendering an individual
+        // screenshot for side previews and detached exports.
+        const notch = ss.frame && ss.frame.notch;
+        if (notch && notch !== 'none' && typeof drawNotchShape === 'function') {
+            const nctx = roundedImage.getContext('2d');
+            if (nctx) drawNotchShape(nctx, 0, 0, roundedImage.width, roundedImage.height, cornerRadius, notch);
+        }
         const newTexture = new THREE.Texture(roundedImage);
         newTexture.needsUpdate = true;
         newTexture.encoding = THREE.sRGBEncoding;

@@ -1080,10 +1080,14 @@ async function runHttp(port: number) {
   // (correct behind proxies/tunnels); otherwise derive it from the request,
   // honoring X-Forwarded-* set by reverse proxies.
   const publicBaseUrlFor = (req: express.Request): string | undefined => {
-    if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
+    const configured = process.env.PUBLIC_BASE_URL?.replace(/\/+$/, "");
     const proto = String(req.headers["x-forwarded-proto"] || req.protocol).split(",")[0].trim();
     const host = String(req.headers["x-forwarded-host"] || req.get("host") || "").split(",")[0].trim();
-    return host ? `${proto}://${host}` : undefined;
+    const base = configured || (host ? `${proto}://${host}` : undefined);
+    if (!base) return undefined;
+    return req.originalUrl.startsWith("/mcp") && !base.endsWith("/mcp")
+      ? `${base}/mcp`
+      : base;
   };
 
   // Binary upload endpoint (raw image bytes — no base64). Must come before the
